@@ -37,11 +37,20 @@ import pandas as pd
 import fees
 
 POSITIONS_SQL = """
-WITH resolved AS (
-    SELECT ticker, event_ticker, result,
-           split_part(event_ticker, '-', 1) AS series
-    FROM read_parquet('{markets}/*.parquet')
-    WHERE status = 'finalized' AND result IN ('yes', 'no')
+WITH notional AS (
+    -- Becker excludes markets under $100 of notional volume; mirror that so
+    -- results stay comparable to the published figures.
+    SELECT ticker, SUM(count * yes_price / 100.0) AS usd
+    FROM read_parquet('{trades}/*.parquet')
+    GROUP BY ticker
+),
+resolved AS (
+    SELECT m.ticker, m.event_ticker, m.result,
+           split_part(m.event_ticker, '-', 1) AS series
+    FROM read_parquet('{markets}/*.parquet') m
+    INNER JOIN notional n ON m.ticker = n.ticker
+    WHERE m.status = 'finalized' AND m.result IN ('yes', 'no')
+      AND n.usd >= {min_notional}
 ),
 legs AS (
     -- The taker's own position.
@@ -80,14 +89,17 @@ GROUP BY 1, 2, 3, 4, 5, 6
 """
 
 
-def load_event_level(data_dir: Path, min_price: int, max_price: int) -> pd.DataFrame:
+def load_event_level(
+    data_dir: Path, min_price: int, max_price: int, min_notional: float = 100.0
+) -> pd.DataFrame:
     """Aggregate every trade leg to (event, year, role, side, price) granularity."""
     markets, trades = data_dir / "markets", data_dir / "trades"
     for d in (markets, trades):
         if not any(d.glob("*.parquet")):
             raise SystemExit(f"no parquet files in {d}")
     sql = POSITIONS_SQL.format(
-        markets=markets, trades=trades, min_price=min_price, max_price=max_price
+        markets=markets, trades=trades, min_price=min_price,
+        max_price=max_price, min_notional=min_notional,
     )
     return duckdb.connect().execute(sql).df()
 
@@ -183,11 +195,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--side", choices=["yes", "no", "both"], default="both")
     p.add_argument("--min-events", type=int, default=30,
                    help="suppress buckets too thin to interpret")
+    p.add_argument("--min-notional", type=float, default=100.0,
+                   help="drop markets below this notional volume, as the paper does")
     p.add_argument("--n-boot", type=int, default=2000)
     p.add_argument("--csv", type=Path, help="also write the full summary here")
     args = p.parse_args(argv)
 
-    events = load_event_level(args.data, args.min_price, args.max_price)
+    events = load_event_level(args.data, args.min_price, args.max_price, args.min_notional)
     if args.role != "both":
         events = events[events.role == args.role]
     if args.side != "both":
@@ -200,7 +214,8 @@ def main(argv: list[str] | None = None) -> int:
     shown = summary[summary.n_events >= args.min_events]
 
     print(f"\nKalshi cheap-tail replication  ({args.min_price}-{args.max_price}c, "
-          f"fees applied, CIs clustered by event)\n")
+          f"fees applied, CIs clustered by event, "
+          f"markets >= ${args.min_notional:g} notional)\n")
     if shown.empty:
         print(f"every bucket had < {args.min_events} independent events -- "
               "nothing here is interpretable.")

@@ -39,11 +39,32 @@ def test_order_fee_rounds_up_to_the_cent():
     assert fees.order_fee(0.01, 500) == pytest.approx(0.35)
 
 
-def test_headline_claim_net_of_fees():
-    """+23% gross at 1c NO is +16.1% net, on a 0.161pp margin of safety."""
+def test_pooled_headline_claim_net_of_fees():
+    """The pooled +23% at 1c NO is +16.1% net, on a 0.161pp margin of safety.
+
+    This is the *pooled* figure (both roles). It is not a return any single
+    participant could have earned -- see test_paper_role_split_at_one_cent.
+    """
     assert fees.net_return_pct(1, 0.0123) == pytest.approx(16.07, abs=0.05)
     assert fees.breakeven_win_rate(0.01) == pytest.approx(0.010693)
     assert (0.0123 - fees.breakeven_win_rate(0.01)) == pytest.approx(0.00161, abs=1e-5)
+
+
+def test_paper_role_split_at_one_cent():
+    """Becker reports 0.43% taker / 1.57% maker win rates at 1c.
+
+    Net of fees that is a ~119pp role gap, against the 64pp YES/NO gap the
+    popular framing cites. Crossing the spread at 1c is deeply negative whatever
+    side you take; the tail edge belongs to whoever is resting the order.
+    """
+    taker = fees.net_return_pct(1, 0.0043, maker=False)
+    maker = fees.net_return_pct(1, 0.0157, maker=True)
+
+    assert taker == pytest.approx(-63.9, abs=0.5)
+    assert maker == pytest.approx(+55.3, abs=0.5)
+    assert maker - taker > 100.0
+    # Both roles' gross figures are symmetric about the 1% implied probability.
+    assert (0.0043 + 0.0157) / 2 == pytest.approx(0.01)
 
 
 def test_breakeven_is_lower_for_makers():
@@ -72,6 +93,24 @@ def test_pooled_yes_and_no_curves_are_an_exact_reflection():
         ev_no = 100 * (~subset).mean() - (100 - p)
         assert ev_yes + ev_no == pytest.approx(0.0, abs=1e-9)
 
+        # The paper quotes returns, not cents, so the reflection carries a
+        # P/(100-P) scale factor there -- which is how a -0.23% figure at 99c
+        # YES is republished as the +23% headline at 1c NO.
+        ret_yes, ret_no = ev_yes / p, ev_no / (100 - p)
+        assert ret_no == pytest.approx(-ret_yes * p / (100 - p), abs=1e-9)
+
+
+def test_headline_pair_comes_from_two_different_price_points():
+    """-41% at 1c YES and +23% at 1c NO are not two views of one population.
+
+    Inverting each through EV = 100*W - P recovers the win rates that generate
+    them: 0.59% at yes_price=1 and 98.77% at yes_price=99. Different markets.
+    """
+    # yes_price = 1, W = 0.59%  ->  YES return -41%
+    assert 100 * (100 * 0.0059 - 1) / 1 == pytest.approx(-41.0, abs=0.5)
+    # yes_price = 99, W = 98.77%  ->  the NO leg, priced at 1c, returns +23%
+    assert 100 * (100 * (1 - 0.9877) - 1) / 1 == pytest.approx(+23.0, abs=0.5)
+
 
 # ------------------------------------------------------------- the harness
 
@@ -79,7 +118,7 @@ def _run(**kw):
     kw.setdefault("trades_per_market", 1)
     with tempfile.TemporaryDirectory() as tmp:
         data = synthetic.generate(Path(tmp), **kw)
-        events = replicate.load_event_level(data, 1, 10)
+        events = replicate.load_event_level(data, 1, 10, min_notional=0.0)
         return replicate.summarise(events, [], n_boot=400)
 
 
