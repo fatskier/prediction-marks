@@ -4,13 +4,81 @@ Testing whether Becker's *Microstructure of Wealth Transfer in Prediction Market
 (2026-01-18) supports an executable "buy cheap NO" strategy, before any trading
 bot is built.
 
-**Conclusion so far: the strategy as popularly framed does not exist.** The
-paper's own role decomposition says crossing the spread at 1¢ loses money on
-*either* side. What is profitable at the tail is being the maker — which is a
-market-making business with adverse selection and inventory risk, not a
-directional bet on NO.
+## Result: no
 
-Stage 1 remains worth running, but on a sharper question. See *Go / no-go*.
+The role × side × price cell has been computed. **Taker-reachable cheap NO is
+negative at 9 of the 10 price levels from 1¢ to 10¢**, net of fees:
+
+```
+ 1c:+6%   2c:-7%   3c:-65%   4c:-40%   5c:-40%
+ 6c:-36%  7c:-42%  8c:-33%   9c:-32%  10c:-25%
+```
+
+Mean −31.5%, spread 71pp. The single positive level sits between −7% and −65% at
+its immediate neighbours — an isolated point in a noisy series, not a signal.
+Stage 1 fails. Do not build the bot.
+
+The full table, net of Kalshi fees:
+
+| price | side | taker win | taker net | maker win | maker net |
+|---|---|---:|---:|---:|---:|
+| 1¢ | NO | 1.13% | **+6.1%** | 1.41% | +39.3% |
+| 1¢ | YES | 0.49% | −57.9% | 0.72% | −29.7% |
+| 2¢ | NO | 1.99% | −7.4% | 1.71% | −16.2% |
+| 3¢ | NO | 1.26% | −64.8% | 3.10% | +1.6% |
+| 5¢ | NO | 3.34% | −39.9% | 3.93% | −23.1% |
+| 10¢ | NO | 8.10% | −25.3% | 8.83% | −13.3% |
+
+Makers beat takers in 19 of 20 cheap-tail cells. Role dominates side, as
+Finding 2 predicted.
+
+### How it was computed
+
+The 36GiB trade dataset is unreachable from this environment (org egress policy
+blocks `s3.jbecker.dev` and all Kalshi hosts), but the paper publishes the
+computed output behind every figure in
+[Jon-Becker/research](https://github.com/Jon-Becker/research), MIT licensed. Two
+of those series are enough.
+
+`maker_win_rate_by_direction.json` gives maker win rate by side and cost basis.
+The taker side then follows exactly, with no estimation: every print has one
+maker leg and one taker leg on opposite sides at complementary prices, so
+
+```
+taker_winrate(NO,  p) = 1 − maker_winrate(YES, 100−p)
+taker_winrate(YES, p) = 1 − maker_winrate(NO,  100−p)
+```
+
+**Independent validation.** The paper also ships
+`yes_no_asymmetry_significance.csv`, which carries its p-values and turns out to
+be the taker-side series. Our taker cells come from a *different* file, so the
+agreement is corroboration rather than restatement: across all 19 shared price
+levels the median gap is **0.01pp** and the worst is 0.46pp.
+
+```bash
+python published_cells.py --fig vendor/becker-fig
+```
+
+### Caveats that keep this from being final
+
+- **Pooled 2021–2025.** These aggregates blend the pre-2024 regime (takers
+  winning) with the post-election one. See Finding 4.
+- **No clustering possible.** The published series give no market or event
+  counts, so the intervals in Finding 5 cannot be computed from them. Given the
+  71pp spread across adjacent price levels, honest intervals would be wide
+  enough to contain nearly every cell.
+- Overturning this verdict needs the full dataset and `replicate.py`, which does
+  the by-year and event-clustered work these aggregates cannot support.
+
+### An inconsistency worth knowing about
+
+Two of the paper's own output files disagree about the flagship statistic. For
+1¢ NO, `longshot_ev_asymmetry.json` (the pooled series, and the source of the
+published "+23%") reports **+22.79%**, while `yes_no_asymmetry_significance.csv`
+reports **+13.46%** — a 9.3pp gap on the same cell, with the p-values attached to
+the lower one. A derived taker blend also fails to reconcile with
+`mispricing_by_price.json` (−27.8% vs −57.5% at 1¢). Anyone building on these
+numbers should reconcile them against the raw data first.
 
 ## Finding 1 — the YES and NO curves are one fact, not two
 
@@ -155,22 +223,17 @@ python -m pytest test_replicate.py -q     # 15 tests, no dataset needed
 
 ## Go / no-go
 
-The original question ("does cheap NO beat cheap YES") is answered and is not
-actionable: it compares two different market populations, and the side effect is
-dwarfed by the role effect.
+Answered above: **no-go.** The original question ("does cheap NO beat cheap YES")
+compares two different market populations and is not actionable. The narrower
+question — is there a taker-reachable cell that clears fees — now has an answer,
+and it is negative at 9 of 10 cheap price levels.
 
-The remaining question is narrower: **on 2024–2025 data, is there any
-taker-reachable cell — a price, side and series where crossing the spread earns a
-net-positive return with an event-clustered 95% CI excluding zero?** The paper's
-pooled −57% taker figure at 1¢ says probably not, but it pools a YES-heavy flow,
-so the NO-specific cell is untested.
-
-If that cell does not exist, the honest conclusion is that capturing the optimism
-tax requires *making* markets, not betting NO — a different project with adverse
-selection, inventory and uptime risk, and one where two obstacles still apply:
-the 1¢ tick is the whole edge (paying 2¢ doubles cost basis), and a large share
-of resting 1¢ offers are in-game markets minutes from resolution where 1¢ is
-correctly priced.
+Capturing the optimism tax means *making* markets, not betting NO: a different
+project, with adverse selection, inventory and uptime risk, worth deciding on its
+own merits rather than as a continuation of this one. Two obstacles would still
+apply: the 1¢ tick is the whole edge (paying 2¢ doubles cost basis), and a large
+share of resting 1¢ offers are in-game markets minutes from resolution where 1¢
+is correctly priced.
 
 ## Files
 
@@ -179,4 +242,7 @@ correctly priced.
 | `fees.py` | Kalshi fee model, breakeven and net-return helpers |
 | `replicate.py` | the harness — event-level aggregation, clustered bootstrap, CLI |
 | `synthetic.py` | Kalshi-schema generator with a known injected edge |
+| `published_cells.py` | derives role × side × price from the paper's published output |
+| `vendor/becker-fig/` | the five MIT-licensed source series, vendored for reproducibility |
 | `test_replicate.py` | 15 tests, including the mirror identity and the paper's role split |
+| `test_published_cells.py` | 8 tests for the derivation and its validation |
