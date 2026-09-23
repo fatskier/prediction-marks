@@ -20,6 +20,11 @@ Output is gzipped JSONL, one file per stream per UTC hour:
   <out>/YYYY-MM-DD/HH.books.jsonl.gz
   <out>/YYYY-MM-DD/HH.markets.jsonl.gz   (metadata, once per ticker per run)
   <out>/YYYY-MM-DD/HH.universe.jsonl.gz  (each universe refresh)
+  <out>/YYYY-MM-DD/HH.status.jsonl.gz    (market status changes, polled each refresh)
+
+Status is polled so analysis can find when trading actually stopped. Many
+markets close early (a tennis match ends), and their resolution sweep happens
+then, long before the scheduled close_time.
 
 A killed process leaves its last file without a gzip trailer, so a restart
 never appends to an existing file: it writes HH.<stream>.1.jsonl.gz, .2, and
@@ -54,6 +59,8 @@ HOSTS = {
     "demo": "https://demo-api.kalshi.co/trade-api/v2",
 }
 TAIL = 0.10
+ACTIVE = ("active", "open")
+FINAL = ("finalized", "settled")
 
 
 class Api:
@@ -220,6 +227,11 @@ class Recorder:
         self.recent: deque[tuple[float, str, float]] = deque()
         self.universe: list[str] = []
         self.close_ts: dict[str, float | None] = {}
+        # ticker -> last recorded status; seeded from earlier runs' universes in the same tape
+        self.status: dict[str, str | None] = {}
+        for u in read_stream(args.out, "universe"):
+            for tk in u["tail"] + u["control"]:
+                self.status.setdefault(tk, None)
         self.cursor_ts = time.time() - args.window
         self.stop = False
         self.n_trades = 0
@@ -281,6 +293,28 @@ class Recorder:
         )
         self.universe = tails + ctrls
         self.sink.write("universe", [{"_recv": time.time(), "tail": tails, "control": ctrls}])
+        for tk in self.universe:
+            self.status.setdefault(tk, None)
+        self.poll_status()
+
+    def poll_status(self) -> None:
+        """Record status changes for every ticker ever tracked, until it is final."""
+        live = [tk for tk, st in self.status.items() if st not in FINAL]
+        for i in range(0, len(live), 100):
+            chunk = live[i:i + 100]
+            try:
+                d = self.api.get("/markets", tickers=",".join(chunk), limit=len(chunk))
+            except (urllib.error.HTTPError, RuntimeError):
+                continue
+            now = time.time()
+            recs = []
+            for m in d.get("markets", []):
+                tk = m["ticker"]
+                if m.get("status") != self.status.get(tk):
+                    self.status[tk] = m.get("status")
+                    recs.append({"_recv": now, "ticker": tk, "status": m.get("status"),
+                                 "result": m.get("result"), "close_time": m.get("close_time")})
+            self.sink.write("status", recs)
 
     def snapshot(self, ticker: str) -> dict | None:
         t0 = time.time()

@@ -11,17 +11,55 @@ YES at 1-p (taker_side == "yes", no_price == p), and symmetrically for YES.
 Resting size at a level divided by the hourly maker-fill volume at that level
 approximates how long a new quote joining the back of the queue waits.
 
+Expiry sweeps are excluded by default. When a market's result is effectively
+known, takers buy the winning side at 99c+ and sweep every cheap bid in the
+book; that volume is not a queue a maker can profitably join. A fill or book
+snapshot is a sweep if it falls within --sweep-min minutes of the market's
+effective close: the scheduled close_time, or, if the recorder saw trading
+stop earlier (status no longer active), the last print before that. On the
+tape, 99.8% of <=1c fills in markets open an hour or less land in the final
+10 minutes, and none fall between 15 and 60 minutes out, so the result is
+insensitive to the window anywhere in 15-60. Because a sweep is only
+recognisable after the fact, the analysis window ends --sweep-min before the
+last book snapshot. --keep-sweeps restores the raw numbers.
+
     python tail_depth.py --tape data/tape
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import statistics as st
 from collections import defaultdict
 from datetime import datetime
 
-from tape import TAIL, read_stream, trade_ts
+from tape import ACTIVE, TAIL, read_stream, trade_ts
+
+
+def iso_ts(s: str) -> float:
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+
+
+def effective_close(scheduled: float, status_events: list[tuple[float, str]], prints: list[float]) -> float:
+    """When trading actually stopped.
+
+    status_events are (recv_ts, status) in time order; prints are sorted print
+    times. If the market was first seen not active at T, trading stopped at the
+    last print at or before T (or at T with no prints), unless the scheduled
+    close came first.
+    """
+    stop = next((ts for ts, stt in status_events if stt and stt not in ACTIVE), None)
+    if stop is None:
+        return scheduled
+    i = bisect.bisect_right(prints, stop)
+    if i:
+        stop = prints[i - 1]
+    return min(scheduled, stop)
+
+
+def in_sweep(t: float, close_eff: float | None, window: float) -> bool:
+    return close_eff is not None and t >= close_eff - window
 
 
 def f(x) -> float:
@@ -86,21 +124,49 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tape", default="data/tape")
     ap.add_argument("--tail", type=float, default=TAIL)
+    ap.add_argument("--sweep-min", type=float, default=15, help="minutes before effective close treated as a sweep")
+    ap.add_argument("--keep-sweeps", action="store_true", help="do not exclude expiry sweeps")
     a = ap.parse_args(argv)
 
+    window = a.sweep_min * 60
     tail_set: set[str] = set()
     for u in read_stream(a.tape, "universe"):
         tail_set.update(u["tail"])
     meta = {m["ticker"]: m for m in read_stream(a.tape, "markets")}
+    status = defaultdict(list)
+    for r in read_stream(a.tape, "status"):
+        status[r["ticker"]].append((r["_recv"], r["status"]))
+
+    trades = [t for t in read_stream(a.tape, "trades") if t["ticker"] in tail_set]
+    for t in trades:
+        t["_ts"] = trade_ts(t)
+    prints = defaultdict(list)
+    for t in trades:
+        prints[t["ticker"]].append(t["_ts"])
+    close_eff: dict[str, float | None] = {}
+    for tk in tail_set:
+        m = meta.get(tk)
+        if not m or not m.get("close_time"):
+            close_eff[tk] = None
+            continue
+        close_eff[tk] = effective_close(iso_ts(m["close_time"]), sorted(status[tk]), sorted(prints[tk]))
+    excluded = (lambda tk, t: False) if a.keep_sweeps else (lambda tk, t: in_sweep(t, close_eff[tk], window))
+
+    books = [b for b in read_stream(a.tape, "books") if b["ticker"] in tail_set]
+    t_min = min((b["_recv"] for b in books), default=0.0)
+    t_max = max((b["_recv"] for b in books), default=0.0)
+    if not a.keep_sweeps:
+        t_max -= window  # a sweep in the last window is not yet recognisable
 
     per_ticker = defaultdict(list)
-    t_min, t_max = float("inf"), 0.0
-    n_books = n_empty = n_noncheap = 0
-    for b in read_stream(a.tape, "books"):
-        if b["ticker"] not in tail_set:
+    n_books = n_empty = n_noncheap = n_sweep_books = 0
+    for b in books:
+        if b["_recv"] > t_max:
             continue
         n_books += 1
-        t_min, t_max = min(t_min, b["_recv"]), max(t_max, b["_recv"])
+        if excluded(b["ticker"], b["_recv"]):
+            n_sweep_books += 1
+            continue
         if not b["yes"] and not b["no"]:
             n_empty += 1
             continue
@@ -115,14 +181,19 @@ def main(argv=None):
 
     # maker fills on the cheap side, per ticker and cent bucket, over the book window
     fills = defaultdict(float)  # (ticker, side, bucket) -> contracts
-    for t in read_stream(a.tape, "trades"):
+    swept = defaultdict(float)  # bucket -> contracts excluded as sweeps
+    for t in trades:
         # window on execution time: the startup backfill shares a single _recv
-        if t["ticker"] not in per_ticker or not (t_min <= trade_ts(t) <= t_max):
+        if not (t_min <= t["_ts"] <= t_max):
             continue
         # taker buys YES -> a maker NO bid at no_price filled, and vice versa
         maker_side = "no" if t["taker_side"] == "yes" else "yes"
         p = f(t["no_price_dollars"] if maker_side == "no" else t["yes_price_dollars"])
-        if p <= a.tail:
+        if p > a.tail:
+            continue
+        if excluded(t["ticker"], t["_ts"]):
+            swept[cent_bucket(p)] += f(t["count_fp"])
+        elif t["ticker"] in per_ticker:
             fills[(t["ticker"], maker_side, cent_bucket(p))] += f(t["count_fp"])
 
     print(f"# Tail book depth, {datetime.utcfromtimestamp(t_min):%Y-%m-%d %H:%M}"
@@ -130,7 +201,16 @@ def main(argv=None):
     n_snap = sum(len(v) for v in per_ticker.values())
     print(f"{len(tail_set)} tickers ever in the tail universe; {len(per_ticker)} with a cheap-side book. "
           f"{n_books} tail snapshots: {n_snap} with a cheap side, {n_empty} empty, "
-          f"{n_noncheap} no bid <= {a.tail:.0%} on either side.\n")
+          f"{n_noncheap} no bid <= {a.tail:.0%} on either side, {n_sweep_books} in a sweep window.\n")
+    if a.keep_sweeps:
+        print("Expiry sweeps INCLUDED (--keep-sweeps).\n")
+    else:
+        tot = sum(swept.values()) + sum(fills.values())
+        print(f"Expiry sweeps excluded: fills and snapshots within {a.sweep_min:g} min of effective close. "
+              f"That removed {sum(swept.values()):,.0f} of {tot:,.0f} cheap-side maker contracts "
+              f"({sum(swept.values()) / tot:.0%}), and {swept[1]:,.0f} of "
+              f"{swept[1] + sum(v for (_, _, c), v in fills.items() if c == 1):,.0f} at (0¢, 1¢]."
+              f" Window ends {a.sweep_min:g} min before the last snapshot.\n" if tot else "")
 
     # per-ticker medians, then distribution across tickers
     rows = []
@@ -139,7 +219,7 @@ def main(argv=None):
         close = m.get("close_time")
         life_h = None
         if close:
-            life_h = (datetime.fromisoformat(close.replace("Z", "+00:00")).timestamp() - st.median(s["t"] for s in ss)) / 3600
+            life_h = (iso_ts(close) - st.median(s["t"] for s in ss)) / 3600
         side = max(("no", "yes"), key=lambda sd: sum(1 for s in ss if s["side"] == sd))
         fb = cent_bucket(st.median(s["best"] for s in ss))
         fill_h = fills[(tk, side, fb)] / hours
