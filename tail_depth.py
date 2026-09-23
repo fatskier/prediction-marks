@@ -46,7 +46,7 @@ import statistics as st
 from collections import defaultdict
 from datetime import datetime
 
-from tape import ACTIVE, TAIL, read_stream, trade_ts
+from tape import ACTIVE, SWEEP_MIN, SWEEP_MIN_SPORTS, TAIL, read_stream, trade_ts
 
 
 def iso_ts(s: str) -> float:
@@ -136,8 +136,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tape", default="data/tape")
     ap.add_argument("--tail", type=float, default=TAIL)
-    ap.add_argument("--sweep-min", type=float, default=15, help="minutes before effective close treated as a sweep")
-    ap.add_argument("--sweep-min-sports", type=float, default=60,
+    ap.add_argument("--sweep-min", type=float, default=SWEEP_MIN, help="minutes before effective close treated as a sweep")
+    ap.add_argument("--sweep-min-sports", type=float, default=SWEEP_MIN_SPORTS,
                     help="sweep window for Sports-category markets, which can be decided in play")
     ap.add_argument("--min-span", type=float, default=5, help="minutes a ticker must be sampled for its fill rate to count")
     ap.add_argument("--keep-sweeps", action="store_true", help="do not exclude expiry sweeps")

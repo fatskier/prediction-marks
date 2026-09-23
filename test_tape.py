@@ -61,3 +61,45 @@ def test_sink_restart_writes_new_readable_part(tmp_path):
     sink.write("trades", [{"x": 2}])
     sink.close()
     assert [r["x"] for r in read_stream(str(tmp_path), "trades")] == [1, 2]
+
+
+def _recorder(tmp_path, markets, events):
+    import time
+    from datetime import datetime, timezone
+    from tape import Recorder
+
+    iso = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat().replace("+00:00", "Z")
+
+    class Args:
+        host, out, rate, window = "prod", str(tmp_path), 100.0, 1800
+        sweep_min, sweep_min_sports = 15, 60
+
+    rec = Recorder(Args)
+    now = time.time()
+
+    def get(path, **_):
+        kind, key = path.strip("/").split("/")
+        if kind == "markets":
+            ev, mins = markets[key]
+            return {"market": {"ticker": key, "event_ticker": ev, "status": "active",
+                               "close_time": iso(now + mins * 60)}}
+        return {"event": {"event_ticker": key, "category": events[key]}}
+
+    rec.api.get = get
+    return rec
+
+
+def test_eligible_respects_sweep_window_by_category(tmp_path):
+    rec = _recorder(tmp_path,
+                    {"BTC30": ("E-BTC", 30), "BTC10": ("E-BTC", 10),
+                     "TEN30": ("E-TEN", 30), "TEN90": ("E-TEN", 90)},
+                    {"E-BTC": "Crypto", "E-TEN": "Sports"})
+    assert rec.eligible("BTC30") and not rec.eligible("BTC10")
+    assert not rec.eligible("TEN30") and rec.eligible("TEN90")
+
+
+def test_eligible_drops_markets_seen_to_stop(tmp_path):
+    rec = _recorder(tmp_path, {"TEN90": ("E-TEN", 90)}, {"E-TEN": "Sports"})
+    assert rec.eligible("TEN90")
+    rec.status["TEN90"] = "inactive"
+    assert not rec.eligible("TEN90")

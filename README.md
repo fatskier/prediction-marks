@@ -1,10 +1,15 @@
-# Kalshi "optimism tax" — Stage 1 replication
+# Kalshi "optimism tax"
 
 Testing whether Becker's *Microstructure of Wealth Transfer in Prediction Markets*
-(2026-01-18) supports an executable "buy cheap NO" strategy, before any trading
-bot is built.
+(2026-01-18) supports an executable cheap-tail strategy, before any trading bot
+is built.
 
-## Result: no
+- **Stage 1 — taker ("buy cheap NO"): no.** Below.
+- **Stage 2 — maker (rest cheap bids and collect the maker edge): in progress.**
+  A live order-book tape is being recorded; see
+  [Stage 2](#stage-2--the-maker-question-an-order-book-tape).
+
+## Stage 1 result: no
 
 The role × side × price cell has been computed. **Taker-reachable cheap NO is
 negative at 9 of the 10 price levels from 1¢ to 10¢**, net of fees:
@@ -35,7 +40,8 @@ Finding 2 predicted.
 ### How it was computed
 
 The 36GiB trade dataset is unreachable from this environment (org egress policy
-blocks `s3.jbecker.dev` and all Kalshi hosts), but the paper publishes the
+blocks `s3.jbecker.dev`; the Kalshi API has since been opened and is what
+Stage 2 records from), but the paper publishes the
 computed output behind every figure in
 [Jon-Becker/research](https://github.com/Jon-Becker/research), MIT licensed. Two
 of those series are enough.
@@ -228,12 +234,101 @@ compares two different market populations and is not actionable. The narrower
 question — is there a taker-reachable cell that clears fees — now has an answer,
 and it is negative at 9 of 10 cheap price levels.
 
-Capturing the optimism tax means *making* markets, not betting NO: a different
-project, with adverse selection, inventory and uptime risk, worth deciding on its
-own merits rather than as a continuation of this one. Two obstacles would still
-apply: the 1¢ tick is the whole edge (paying 2¢ doubles cost basis), and a large
-share of resting 1¢ offers are in-game markets minutes from resolution where 1¢
-is correctly priced.
+Capturing the optimism tax means *making* markets, not betting NO, with adverse
+selection, inventory and uptime risk that the published aggregates cannot price.
+That is Stage 2. Two obstacles flagged here are now confirmed on the live tape:
+most cheap-side fills are expiry sweeps of markets whose result is already known
+(92% of cheap-side maker volume in the first hour), and some markets now quote
+in sub-cent ticks, so the 1¢ level is no longer always the bottom of the book.
+
+## Stage 2 — the maker question: an order-book tape
+
+Becker's maker edge at 1¢ (+55% net of fees) is an average over fills that
+happened. A new maker also has to wait behind the queue already resting at 1¢,
+and the fills it does get may be the bad ones. Neither can be read off trade
+aggregates, so Stage 2 records the book.
+
+### What is recorded
+
+`tape.py` polls Kalshi's public REST API (no API key needed):
+
+- **trades:** every print on the exchange, about 30–90 per second.
+- **books:** full-depth snapshots of 40 cheap-tail tickers (last print ≤10¢ or
+  ≥90¢) and 10 mid-priced controls, each refreshed about every 6 seconds. The set
+  is re-ranked every minute by recent print count.
+- **markets, events, status:** metadata, event category, and every status
+  change, so the analysis can tell when a market actually stopped trading.
+
+There are more than 30,000 open markets, so the tickers are chosen from the
+trade tape rather than by scanning the market list. A ticker is only eligible
+while it is outside its own sweep window (below) and hasn't been seen to stop.
+Before that rule, about 80% of tail book snapshots went to markets about to
+expire. Output is gzipped JSONL per UTC hour under `data/tape/` (gitignored,
+about 25 MB/hour). A restarted recorder writes a new numbered part instead of
+appending to a file a killed process left open.
+
+```bash
+./run_tape.sh                       # records to data/tape/, restarts tape.py if it exits
+python tail_depth.py                # cheap-side depth and 1¢ queue wait, sweeps excluded
+python tail_depth.py --keep-sweeps  # the raw numbers
+```
+
+### Expiry sweeps
+
+When a result is effectively known, takers buy the winning side at 99¢ and fill
+every cheap bid in the book. That volume is not a queue a maker can profitably
+join, so `tail_depth.py` excludes fills and book snapshots within 15 minutes of a
+market's effective close, or 60 minutes for sports. The effective close is the
+scheduled close, or the last print before the recorder saw trading stop,
+whichever is earlier.
+
+- **Non-sports:** in markets open an hour or less, 99.8% of ≤1¢ fills landed in
+  the last 10 minutes, and none fell 15–60 minutes out.
+- **Sports:** these can be decided in play. In the full trade histories of 15
+  sports markets that finished during the tape, 13 had all their 1¢ fills in the
+  last 15 minutes. Two tennis matches had 67% and 81% of theirs 15–60 minutes
+  out, and 60 minutes covers every 1¢ fill in 14 of the 15.
+- **Unresolved:** a sweep only becomes recognisable once trading stops. A ticker
+  still trading at the end of the tape therefore loses its last window from the
+  analysis. A match that is decided but still trading, like a one-day cricket
+  match at 93–99¢ for two hours, is not caught until it stops, and 60 minutes may
+  be too short for cricket.
+
+### First hour (2026-09-23 09:12–10:25 UTC, provisional)
+
+The filter removed 92% of cheap-side maker volume, and 95% at 1¢. What was left:
+30 tickers with usable books, 21 of them recorded long enough to give a fill
+rate. Across those 30 (median, with p10–p90 in brackets):
+
+| | |
+|---|---|
+| best cheap-side bid | 5¢ |
+| contracts at that bid | 853 (105–31k) |
+| depth at ≤10¢ | $287 (p90 $7.8k) |
+| spread | 1¢, one tick (p90 4¢) |
+| best bid on a sub-cent tick | almost never; one long-dated market holds 900k contracts at 0.1¢ |
+
+The 1¢ queue wait is resting contracts divided by maker fills per hour:
+
+| group | wait | caveat |
+|---|---:|---|
+| closing within 24 h | 5.6 h | 62% of fills from one hourly BTC market |
+| non-sports | ~50 h | 146 h including the 0.1¢ wall above |
+| sports | 1.1 h | all fills from one cricket match that was still undecided |
+
+Every price level still gets at least half its fills from a single ticker, so
+none of these waits is an estimate yet. An overnight run is in progress.
+
+### Limits
+
+- **Snapshots, not order-by-order changes.** A snapshot every ~6 seconds shows
+  depth at each price and where the book stood around each print. It can't track
+  a single order's place in the queue. That needs the authenticated WebSocket
+  `orderbook_delta` feed and an API key.
+- **The tape lives in an ephemeral cloud container.** A container recycle kills
+  the recorder and can lose the data. Gaps so far: 09:18–09:22, 10:30–12:27, and
+  a few seconds at each deliberate restart. For a durable multi-day tape, run
+  `./run_tape.sh` on a machine you control.
 
 ## Files
 
@@ -246,3 +341,8 @@ is correctly priced.
 | `vendor/becker-fig/` | the five MIT-licensed source series, vendored for reproducibility |
 | `test_replicate.py` | 15 tests, including the mirror identity and the paper's role split |
 | `test_published_cells.py` | 8 tests for the derivation and its validation |
+| `tape.py` | Stage 2 recorder: trade tape, book snapshots, status, metadata |
+| `run_tape.sh` | keeps `tape.py` running; restarts it if it exits |
+| `tail_depth.py` | cheap-side depth, spreads and 1¢ queue wait over the tape, sweeps excluded |
+| `test_tape.py` | 8 tests: ticker selection, the sweep-window rule, restart-safe output |
+| `test_tail_depth.py` | 7 tests: effective close, sweep windows by category, cheap-side stats |

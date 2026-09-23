@@ -14,6 +14,13 @@ work: there are more than 30k open markets. Each refresh ranks tickers by
 recent print count and keeps the most active tail-priced ones (last YES print
 <= TAIL or >= 1-TAIL), plus a few mid-priced controls.
 
+Ranking by activity alone fills the universe with markets on their way to
+settlement: in the first hour 80% of tail book snapshots fell in the expiry
+sweep windows that tail_depth.py throws away. So a ticker is only eligible
+while it is outside its own sweep window (SWEEP_MIN before close,
+SWEEP_MIN_SPORTS for Sports-category events, which can be decided in play)
+and has not been seen to stop trading.
+
 Output is gzipped JSONL, one file per stream per UTC hour:
 
   <out>/YYYY-MM-DD/HH.trades.jsonl.gz
@@ -62,6 +69,9 @@ HOSTS = {
 TAIL = 0.10
 ACTIVE = ("active", "open")
 FINAL = ("finalized", "settled")
+# minutes before effective close treated as an expiry sweep; tail_depth.py documents the evidence
+SWEEP_MIN = 15
+SWEEP_MIN_SPORTS = 60
 
 
 class Api:
@@ -228,13 +238,15 @@ class Recorder:
         self.recent: deque[tuple[float, str, float]] = deque()
         self.universe: list[str] = []
         self.close_ts: dict[str, float | None] = {}
+        self.event_of: dict[str, str | None] = {}
         # ticker -> last recorded status; seeded from earlier runs' universes in the same tape
         self.status: dict[str, str | None] = {}
         for u in read_stream(args.out, "universe"):
             for tk in u["tail"] + u["control"]:
                 self.status.setdefault(tk, None)
         # event metadata (category decides the sweep window); fetch any earlier runs missed
-        self.events_done = {e["event_ticker"] for e in read_stream(args.out, "events")}
+        self.category = {e["event_ticker"]: e.get("category") for e in read_stream(args.out, "events")}
+        self.events_done = set(self.category)
         self.events_todo = {m["event_ticker"] for m in read_stream(args.out, "markets")
                             if m.get("event_ticker")} - self.events_done
         self.cursor_ts = time.time() - args.window
@@ -270,12 +282,29 @@ class Recorder:
         while self.recent and self.recent[0][0] < now - self.args.window:
             self.recent.popleft()
 
-    def eligible(self, ticker: str) -> bool:
-        """Open and not about to close. Metadata is fetched and recorded once per ticker.
+    def event_category(self, ev: str | None) -> str | None:
+        if ev and ev not in self.events_done:
+            try:
+                e = self.api.get(f"/events/{ev}").get("event", {})
+            except (urllib.error.HTTPError, RuntimeError):
+                return None
+            e.pop("markets", None)
+            e["_recv"] = time.time()
+            self.sink.write("events", [e])
+            self.category[ev] = e.get("category")
+            self.events_done.add(ev)
+            self.events_todo.discard(ev)
+        return self.category.get(ev)
 
-        Expiring markets print at the extremes on their way to settlement, so
-        without this the tail universe fills with markets that have no book.
+    def eligible(self, ticker: str) -> bool:
+        """Still trading and outside its sweep window. Metadata is fetched and recorded once.
+
+        Expiring markets print at the extremes on their way to settlement and
+        dominate a ranking by activity, so without this most book requests go
+        to sweeps that the analysis discards.
         """
+        if self.status.get(ticker) not in (None, *ACTIVE):
+            return False
         if ticker not in self.close_ts:
             try:
                 m = self.api.get(f"/markets/{ticker}").get("market", {})
@@ -284,14 +313,17 @@ class Recorder:
                 return False
             m["_recv"] = time.time()
             self.sink.write("markets", [m])
-            if m.get("event_ticker") and m["event_ticker"] not in self.events_done:
-                self.events_todo.add(m["event_ticker"])
+            self.event_of[ticker] = m.get("event_ticker")
             ok = m.get("status") in ("active", "open") and m.get("close_time")
             self.close_ts[ticker] = (
                 datetime.fromisoformat(m["close_time"].replace("Z", "+00:00")).timestamp() if ok else None
             )
         close = self.close_ts[ticker]
-        return close is not None and close > time.time() + self.args.min_life
+        if close is None:
+            return False
+        sports = self.event_category(self.event_of.get(ticker)) == "Sports"
+        window = (self.args.sweep_min_sports if sports else self.args.sweep_min) * 60
+        return close > time.time() + window
 
     def refresh_universe(self) -> None:
         tails, ctrls = select_universe(
@@ -306,16 +338,9 @@ class Recorder:
         self.fetch_events()
 
     def fetch_events(self) -> None:
+        """Fetch categories for events seen in earlier runs of the same tape."""
         for ev in sorted(self.events_todo):
-            try:
-                e = self.api.get(f"/events/{ev}").get("event", {})
-            except (urllib.error.HTTPError, RuntimeError):
-                continue
-            e.pop("markets", None)
-            e["_recv"] = time.time()
-            self.sink.write("events", [e])
-            self.events_done.add(ev)
-        self.events_todo -= self.events_done
+            self.event_category(ev)
 
     def poll_status(self) -> None:
         """Record status changes for every ticker ever tracked, until it is final."""
@@ -397,7 +422,10 @@ def main(argv=None) -> None:
     p.add_argument("--n-tail", type=int, default=40)
     p.add_argument("--n-ctrl", type=int, default=10)
     p.add_argument("--window", type=float, default=1800, help="seconds of prints used to rank the universe")
-    p.add_argument("--min-life", type=float, default=120, help="skip markets closing within this many seconds")
+    p.add_argument("--sweep-min", type=float, default=SWEEP_MIN,
+                   help="skip markets within this many minutes of close")
+    p.add_argument("--sweep-min-sports", type=float, default=SWEEP_MIN_SPORTS,
+                   help="the same for Sports-category markets")
     p.add_argument("--max-pages", type=int, default=200, help="page cap per trade poll")
     p.add_argument("--trade-every", type=float, default=5)
     p.add_argument("--universe-every", type=float, default=60)
