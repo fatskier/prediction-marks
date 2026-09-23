@@ -21,6 +21,10 @@ Output is gzipped JSONL, one file per stream per UTC hour:
   <out>/YYYY-MM-DD/HH.markets.jsonl.gz   (metadata, once per ticker per run)
   <out>/YYYY-MM-DD/HH.universe.jsonl.gz  (each universe refresh)
 
+A killed process leaves its last file without a gzip trailer, so a restart
+never appends to an existing file: it writes HH.<stream>.1.jsonl.gz, .2, and
+so on. Read the tape with read_stream(), which tolerates the missing trailer.
+
 Prices and sizes are kept as the API's decimal strings so nothing is lost to
 float rounding; tails can have sub-cent ticks (price_level_structure).
 
@@ -107,8 +111,11 @@ class Sink:
                 cur[1].close()
             path = os.path.join(self.root, f"{hour}.{stream}.jsonl.gz")
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            # Appending opens a new gzip member; concatenated members are valid gzip.
-            cur = (hour, gzip.open(path, "at", encoding="utf-8"))
+            part = 0
+            while os.path.exists(path):
+                part += 1
+                path = os.path.join(self.root, f"{hour}.{stream}.{part}.jsonl.gz")
+            cur = (hour, gzip.open(path, "wt", encoding="utf-8"))
             self.files[stream] = cur
         f = cur[1]
         for r in records:
@@ -119,6 +126,29 @@ class Sink:
         for _, f in self.files.values():
             f.close()
         self.files.clear()
+
+
+def read_stream(root: str, stream: str):
+    """Yield every record of one stream, in file order, across all parts.
+
+    A file whose writer was killed ends without a gzip trailer; everything
+    flushed before the kill is still yielded.
+    """
+    import glob
+    import re
+
+    def key(p):
+        m = re.search(rf"(\d{{4}}-\d{{2}}-\d{{2}})/(\d{{2}})\.{stream}(?:\.(\d+))?\.jsonl\.gz$", p)
+        return (m.group(1), m.group(2), int(m.group(3) or 0)) if m else (p, "", 0)
+
+    for path in sorted(glob.glob(os.path.join(root, "*", f"*.{stream}*.jsonl.gz")), key=key):
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as f:
+                for line in f:
+                    if line.endswith("\n"):
+                        yield json.loads(line)
+        except EOFError:
+            pass
 
 
 class Seen:

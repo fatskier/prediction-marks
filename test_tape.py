@@ -1,7 +1,4 @@
-import gzip
-import json
-
-from tape import Seen, Sink, is_tail, select_universe
+from tape import Seen, Sink, is_tail, read_stream, select_universe
 
 
 def test_is_tail_both_ends():
@@ -46,13 +43,21 @@ def test_seen_dedupes_and_is_bounded():
     assert s.add("a")  # evicted, so new again
 
 
-def test_sink_appends_readable_gzip(tmp_path):
+def test_restart_after_kill_keeps_both_runs_readable(tmp_path):
+    killed = Sink(str(tmp_path))
+    killed.write("books", [{"x": 1}, {"x": 2}])  # flushed, never closed: no gzip trailer
+    fresh = Sink(str(tmp_path))
+    fresh.write("books", [{"x": 3}])
+    fresh.close()
+    assert len(list(tmp_path.glob("*/*.books*.jsonl.gz"))) == 2
+    assert [r["x"] for r in read_stream(str(tmp_path), "books")] == [1, 2, 3]
+
+
+def test_sink_restart_writes_new_readable_part(tmp_path):
     sink = Sink(str(tmp_path))
     sink.write("trades", [{"x": 1}])
     sink.close()
     sink = Sink(str(tmp_path))
     sink.write("trades", [{"x": 2}])
     sink.close()
-    (f,) = tmp_path.glob("*/*.trades.jsonl.gz")
-    with gzip.open(f, "rt") as fh:
-        assert [json.loads(line)["x"] for line in fh] == [1, 2]
+    assert [r["x"] for r in read_stream(str(tmp_path), "trades")] == [1, 2]
