@@ -21,6 +21,7 @@ Output is gzipped JSONL, one file per stream per UTC hour:
   <out>/YYYY-MM-DD/HH.markets.jsonl.gz   (metadata, once per ticker per run)
   <out>/YYYY-MM-DD/HH.universe.jsonl.gz  (each universe refresh)
   <out>/YYYY-MM-DD/HH.status.jsonl.gz    (market status changes, polled each refresh)
+  <out>/YYYY-MM-DD/HH.events.jsonl.gz    (event metadata incl. category, once per event)
 
 Status is polled so analysis can find when trading actually stopped. Many
 markets close early (a tennis match ends), and their resolution sweep happens
@@ -232,6 +233,10 @@ class Recorder:
         for u in read_stream(args.out, "universe"):
             for tk in u["tail"] + u["control"]:
                 self.status.setdefault(tk, None)
+        # event metadata (category decides the sweep window); fetch any earlier runs missed
+        self.events_done = {e["event_ticker"] for e in read_stream(args.out, "events")}
+        self.events_todo = {m["event_ticker"] for m in read_stream(args.out, "markets")
+                            if m.get("event_ticker")} - self.events_done
         self.cursor_ts = time.time() - args.window
         self.stop = False
         self.n_trades = 0
@@ -279,6 +284,8 @@ class Recorder:
                 return False
             m["_recv"] = time.time()
             self.sink.write("markets", [m])
+            if m.get("event_ticker") and m["event_ticker"] not in self.events_done:
+                self.events_todo.add(m["event_ticker"])
             ok = m.get("status") in ("active", "open") and m.get("close_time")
             self.close_ts[ticker] = (
                 datetime.fromisoformat(m["close_time"].replace("Z", "+00:00")).timestamp() if ok else None
@@ -296,6 +303,19 @@ class Recorder:
         for tk in self.universe:
             self.status.setdefault(tk, None)
         self.poll_status()
+        self.fetch_events()
+
+    def fetch_events(self) -> None:
+        for ev in sorted(self.events_todo):
+            try:
+                e = self.api.get(f"/events/{ev}").get("event", {})
+            except (urllib.error.HTTPError, RuntimeError):
+                continue
+            e.pop("markets", None)
+            e["_recv"] = time.time()
+            self.sink.write("events", [e])
+            self.events_done.add(ev)
+        self.events_todo -= self.events_done
 
     def poll_status(self) -> None:
         """Record status changes for every ticker ever tracked, until it is final."""

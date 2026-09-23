@@ -14,14 +14,26 @@ approximates how long a new quote joining the back of the queue waits.
 Expiry sweeps are excluded by default. When a market's result is effectively
 known, takers buy the winning side at 99c+ and sweep every cheap bid in the
 book; that volume is not a queue a maker can profitably join. A fill or book
-snapshot is a sweep if it falls within --sweep-min minutes of the market's
-effective close: the scheduled close_time, or, if the recorder saw trading
+snapshot is a sweep if it falls within --sweep-min minutes (--sweep-min-sports
+for markets in the Sports category) of the market's effective close: the scheduled close_time, or, if the recorder saw trading
 stop earlier (status no longer active), the last print before that. On the
 tape, 99.8% of <=1c fills in markets open an hour or less land in the final
 10 minutes, and none fall between 15 and 60 minutes out, so the result is
-insensitive to the window anywhere in 15-60. Because a sweep is only
-recognisable after the fact, the analysis window ends --sweep-min before the
-last book snapshot. --keep-sweeps restores the raw numbers.
+insensitive to the window anywhere in 15-60.
+
+In-play sports can be decided well before trading stops: a tennis match that
+is 99c with a set to play, a cricket chase that is out of reach. Their full
+trade histories show this. Of 15 sports markets that stopped during the
+first tape, 13 put all of their 1c fills in the final 15 minutes, but one
+tennis match had 67% of them 15-60 minutes out and another 81%; a 60-minute
+window covers every 1c fill in 14 of the 15 and 98% of the fifteenth. Hence
+the longer --sweep-min-sports. (occurrence_datetime is no use for detecting
+play: for ITF tennis it is a placeholder later than close_time.)
+
+A sweep is only recognisable after the fact, so each ticker still trading
+at the end of the tape loses its last sweep window; one already seen to stop
+is kept whole. Fill rates are per ticker over the span it was sampled, since
+tickers rotate through the universe. --keep-sweeps restores the raw numbers.
 
     python tail_depth.py --tape data/tape
 """
@@ -125,17 +137,26 @@ def main(argv=None):
     ap.add_argument("--tape", default="data/tape")
     ap.add_argument("--tail", type=float, default=TAIL)
     ap.add_argument("--sweep-min", type=float, default=15, help="minutes before effective close treated as a sweep")
+    ap.add_argument("--sweep-min-sports", type=float, default=60,
+                    help="sweep window for Sports-category markets, which can be decided in play")
+    ap.add_argument("--min-span", type=float, default=5, help="minutes a ticker must be sampled for its fill rate to count")
     ap.add_argument("--keep-sweeps", action="store_true", help="do not exclude expiry sweeps")
     a = ap.parse_args(argv)
 
-    window = a.sweep_min * 60
     tail_set: set[str] = set()
     for u in read_stream(a.tape, "universe"):
         tail_set.update(u["tail"])
     meta = {m["ticker"]: m for m in read_stream(a.tape, "markets")}
+    category = {e["event_ticker"]: e.get("category") for e in read_stream(a.tape, "events")}
     status = defaultdict(list)
     for r in read_stream(a.tape, "status"):
         status[r["ticker"]].append((r["_recv"], r["status"]))
+
+    def sports(tk: str) -> bool:
+        return category.get(meta.get(tk, {}).get("event_ticker")) == "Sports"
+
+    def window(tk: str) -> float:
+        return (a.sweep_min_sports if sports(tk) else a.sweep_min) * 60
 
     trades = [t for t in read_stream(a.tape, "trades") if t["ticker"] in tail_set]
     for t in trades:
@@ -150,18 +171,24 @@ def main(argv=None):
             close_eff[tk] = None
             continue
         close_eff[tk] = effective_close(iso_ts(m["close_time"]), sorted(status[tk]), sorted(prints[tk]))
-    excluded = (lambda tk, t: False) if a.keep_sweeps else (lambda tk, t: in_sweep(t, close_eff[tk], window))
+    excluded = (lambda tk, t: False) if a.keep_sweeps else (lambda tk, t: in_sweep(t, close_eff[tk], window(tk)))
 
     books = [b for b in read_stream(a.tape, "books") if b["ticker"] in tail_set]
     t_min = min((b["_recv"] for b in books), default=0.0)
     t_max = max((b["_recv"] for b in books), default=0.0)
-    if not a.keep_sweeps:
-        t_max -= window  # a sweep in the last window is not yet recognisable
+
+    def t_end(tk: str) -> float:
+        """Last time at which tk's data can be classified."""
+        ce = close_eff.get(tk)
+        if a.keep_sweeps or (ce is not None and ce <= t_max):
+            return t_max
+        return t_max - window(tk)
 
     per_ticker = defaultdict(list)
-    n_books = n_empty = n_noncheap = n_sweep_books = 0
+    n_books = n_empty = n_noncheap = n_sweep_books = n_censored = 0
     for b in books:
-        if b["_recv"] > t_max:
+        if b["_recv"] > t_end(b["ticker"]):
+            n_censored += 1
             continue
         n_books += 1
         if excluded(b["ticker"], b["_recv"]):
@@ -178,39 +205,54 @@ def main(argv=None):
         per_ticker[b["ticker"]].append(s)
 
     hours = max((t_max - t_min) / 3600, 1e-9)
+    # each ticker's sampled span; fill rates need a few minutes of it
+    span = {tk: (ss[0]["t"], ss[-1]["t"]) for tk, ss in per_ticker.items()}
+    span_h = {tk: (hi - lo) / 3600 for tk, (lo, hi) in span.items()}
+    rated = {tk for tk, h in span_h.items() if h * 60 >= a.min_span}
 
-    # maker fills on the cheap side, per ticker and cent bucket, over the book window
+    # maker fills on the cheap side, per ticker and cent bucket, over that ticker's span
     fills = defaultdict(float)  # (ticker, side, bucket) -> contracts
     swept = defaultdict(float)  # bucket -> contracts excluded as sweeps
+    kept = defaultdict(float)   # bucket -> contracts not excluded, same window as swept
     for t in trades:
+        tk = t["ticker"]
         # window on execution time: the startup backfill shares a single _recv
-        if not (t_min <= t["_ts"] <= t_max):
+        if not (t_min <= t["_ts"] <= t_end(tk)):
             continue
         # taker buys YES -> a maker NO bid at no_price filled, and vice versa
         maker_side = "no" if t["taker_side"] == "yes" else "yes"
         p = f(t["no_price_dollars"] if maker_side == "no" else t["yes_price_dollars"])
         if p > a.tail:
             continue
-        if excluded(t["ticker"], t["_ts"]):
-            swept[cent_bucket(p)] += f(t["count_fp"])
-        elif t["ticker"] in per_ticker:
-            fills[(t["ticker"], maker_side, cent_bucket(p))] += f(t["count_fp"])
+        c = cent_bucket(p)
+        if excluded(tk, t["_ts"]):
+            swept[c] += f(t["count_fp"])
+            continue
+        kept[c] += f(t["count_fp"])
+        if tk in rated and span[tk][0] <= t["_ts"] <= span[tk][1]:
+            fills[(tk, maker_side, c)] += f(t["count_fp"])
+
+    def rate(tk: str, side: str, c: int) -> float:
+        return fills[(tk, side, c)] / span_h[tk] if tk in rated else float("nan")
 
     print(f"# Tail book depth, {datetime.utcfromtimestamp(t_min):%Y-%m-%d %H:%M}"
           f"–{datetime.utcfromtimestamp(t_max):%H:%M} UTC ({hours:.2f} h)\n")
     n_snap = sum(len(v) for v in per_ticker.values())
-    print(f"{len(tail_set)} tickers ever in the tail universe; {len(per_ticker)} with a cheap-side book. "
+    n_sports = sum(1 for tk in per_ticker if sports(tk))
+    print(f"{len(tail_set)} tickers ever in the tail universe; {len(per_ticker)} with a cheap-side book "
+          f"({n_sports} sports), {len(rated)} sampled >= {a.min_span:g} min so their fill rates count. "
           f"{n_books} tail snapshots: {n_snap} with a cheap side, {n_empty} empty, "
-          f"{n_noncheap} no bid <= {a.tail:.0%} on either side, {n_sweep_books} in a sweep window.\n")
+          f"{n_noncheap} no bid <= {a.tail:.0%} on either side, {n_sweep_books} in a sweep window; "
+          f"{n_censored} more too recent to classify.\n")
     if a.keep_sweeps:
         print("Expiry sweeps INCLUDED (--keep-sweeps).\n")
     else:
-        tot = sum(swept.values()) + sum(fills.values())
-        print(f"Expiry sweeps excluded: fills and snapshots within {a.sweep_min:g} min of effective close. "
-              f"That removed {sum(swept.values()):,.0f} of {tot:,.0f} cheap-side maker contracts "
-              f"({sum(swept.values()) / tot:.0%}), and {swept[1]:,.0f} of "
-              f"{swept[1] + sum(v for (_, _, c), v in fills.items() if c == 1):,.0f} at (0¢, 1¢]."
-              f" Window ends {a.sweep_min:g} min before the last snapshot.\n" if tot else "")
+        tot = sum(swept.values()) + sum(kept.values())
+        if tot:
+            print(f"Expiry sweeps excluded: fills and snapshots within {a.sweep_min:g} min of effective close "
+                  f"({a.sweep_min_sports:g} min for sports). That removed {sum(swept.values()):,.0f} of "
+                  f"{tot:,.0f} cheap-side maker contracts ({sum(swept.values()) / tot:.0%}), and "
+                  f"{swept[1]:,.0f} of {swept[1] + kept[1]:,.0f} at (0¢, 1¢].\n")
 
     # per-ticker medians, then distribution across tickers
     rows = []
@@ -222,7 +264,7 @@ def main(argv=None):
             life_h = (iso_ts(close) - st.median(s["t"] for s in ss)) / 3600
         side = max(("no", "yes"), key=lambda sd: sum(1 for s in ss if s["side"] == sd))
         fb = cent_bucket(st.median(s["best"] for s in ss))
-        fill_h = fills[(tk, side, fb)] / hours
+        fill_h = rate(tk, side, fb)
         rows.append({
             "ticker": tk, "n": len(ss), "side": side,
             "best": st.median(s["best"] for s in ss),
@@ -235,6 +277,7 @@ def main(argv=None):
             "fill_h": fill_h,
             "life_h": life_h,
             "series": tk.split("-")[0],
+            "sports": sports(tk),
         })
 
     def dist(key, fmt="{:,.0f}", rs=rows):
@@ -280,6 +323,8 @@ def main(argv=None):
     groups = (
         ("closing within 24 h", lambda tk: life.get(tk) is not None and life[tk] <= 24),
         ("closing after 24 h", lambda tk: life.get(tk) is not None and life[tk] > 24),
+        ("sports", sports),
+        ("non-sports", lambda tk: not sports(tk)),
     )
     for label, keep in groups:
         print(f"## Queue by price bucket, {label} (cheap side, summed over tickers)\n")
@@ -290,13 +335,14 @@ def main(argv=None):
         print("| bucket | tickers w/ size | resting contracts | fills/h | wait (h) | top ticker share |")
         print("|---|---:|---:|---:|---:|---|")
         for c in sorted(rest):
-            rs = [(tk, sd, x) for tk, sd, x in rest[c] if keep(tk)]
+            # only tickers sampled long enough to have a fill rate
+            rs = [(tk, sd, x) for tk, sd, x in rest[c] if keep(tk) and tk in rated]
             tot = sum(x for _, _, x in rs)
             nz = sum(1 for _, _, x in rs if x > 0)
-            per = sorted(((fills[(tk, sd, c)], tk) for tk, sd, _ in rs), reverse=True)
-            fl = sum(v for v, _ in per) / hours
+            per = sorted(((rate(tk, sd, c), tk) for tk, sd, _ in rs), reverse=True)
+            fl = sum(v for v, _ in per)
             wait = f"{tot / fl:,.1f}" if fl > 0 else "∞"
-            top = f"{per[0][0] / (fl * hours):.0%} {per[0][1]}" if fl > 0 else "–"
+            top = f"{per[0][0] / fl:.0%} {per[0][1]}" if fl > 0 else "–"
             print(f"| ({c-1}¢, {c}¢] | {nz} | {tot:,.0f} | {fl:,.0f} | {wait} | {top} |")
         print()
 
