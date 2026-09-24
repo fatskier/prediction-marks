@@ -189,7 +189,10 @@ def bootstrap_ci(rows: list[tuple[str, float, float, float]], n_boot: int, seed:
 
 
 def summarize(fills, label: str, n_boot: int) -> list[str]:
-    """fills: dicts with bucket, event, ticker, count, win, price."""
+    """fills: per-(market, side, bucket) totals: ticker, event, bucket, count, win, pc, fc.
+
+    pc and fc are price*contracts and maker fee*contracts summed over the fills.
+    """
     out = [f"### {label}\n",
            "| bucket | fills (contracts) | markets | events | avg price | win rate | breakeven | "
            "net return | 95% CI (events) | largest event |",
@@ -201,11 +204,10 @@ def summarize(fills, label: str, n_boot: int) -> list[str]:
         xs = by_b[b]
         c = sum(x["count"] for x in xs)
         w = sum(x["count"] * x["win"] for x in xs)
-        pc = sum(x["count"] * x["price"] for x in xs)
-        fc = sum(x["count"] * fee_per_contract(x["price"], maker=True) for x in xs)
+        pc = sum(x["pc"] for x in xs)
+        fc = sum(x["fc"] for x in xs)
         avg_p = pc / c
-        rows = [(x["event"], x["count"], x["count"] * x["win"], x["count"] * x["price"],
-                 x["count"] * fee_per_contract(x["price"], maker=True)) for x in xs]
+        rows = [(x["event"], x["count"], x["count"] * x["win"], x["pc"], x["fc"]) for x in xs]
         lo, hi = bootstrap_ci(rows, n_boot)
         ev_c = defaultdict(float)
         for x in xs:
@@ -234,19 +236,20 @@ def main(argv=None) -> None:
     a = ap.parse_args(argv)
     cache = a.cache or os.path.join(os.path.dirname(os.path.abspath(a.tape)), "outcomes")
 
-    # 1. cheap maker fills, as slim tuples
-    raw = []
+    # Two streaming passes, so memory stays flat however long the tape gets.
+    # 1. which markets have cheap maker fills
+    tickers: set[str] = set()
     t_lo, t_hi = float("inf"), 0.0
     for t in read_stream(a.tape, "trades"):
         side, p = maker_leg(t)
         ts = trade_ts(t)
         t_lo, t_hi = min(t_lo, ts), max(t_hi, ts)
         if 0 < p <= a.tail:
-            raw.append((t["ticker"], ts, side, p, float(t["count_fp"])))
+            tickers.add(t["ticker"])
 
     # 2. results and categories
     look = Lookup(cache, a.host, a.offline)
-    look.fetch_markets(sorted({r[0] for r in raw}))
+    look.fetch_markets(sorted(tickers))
 
     def window(tk: str) -> float:
         s = series_of(tk)
@@ -254,20 +257,35 @@ def main(argv=None) -> None:
             return a.sweep_min_cricket * 60
         return (a.sweep_min_sports if look.category(s) == "Sports" else a.sweep_min) * 60
 
-    # 3. score
-    kept, swept = [], []
+    close_of = {tk: iso_ts(m["close_time"]) for tk, m in look.markets.items()
+                if m.get("result") in ("yes", "no") and m.get("close_time")}
+    win_of = {tk: look.markets[tk]["result"] for tk in close_of}
+    win_dur = {tk: window(tk) for tk in close_of}
+
+    # 3. score: totals per (market, maker side, bucket, sweep?)
+    agg = defaultdict(lambda: [0.0, 0.0, 0.0])
     unsettled_c = total_c = 0.0
-    for tk, ts, side, p, c in raw:
+    for t in read_stream(a.tape, "trades"):
+        side, p = maker_leg(t)
+        if not 0 < p <= a.tail:
+            continue
+        tk, c = t["ticker"], float(t["count_fp"])
         total_c += c
-        m = look.markets.get(tk)
-        if not m or m.get("result") not in ("yes", "no") or not m.get("close_time"):
+        if tk not in close_of:
             unsettled_c += c
             continue
-        close = iso_ts(m["close_time"])
-        x = {"ticker": tk, "event": m.get("event_ticker") or tk, "count": c, "price": p,
-             "win": 1.0 if m["result"] == side else 0.0, "bucket": cent_bucket(p),
+        sweep = trade_ts(t) >= close_of[tk] - win_dur[tk]
+        e = agg[(tk, side, cent_bucket(p), sweep)]
+        e[0] += c
+        e[1] += c * p
+        e[2] += c * fee_per_contract(p, maker=True)
+
+    kept, swept = [], []
+    for (tk, side, b, sweep), (c, pc, fc) in agg.items():
+        x = {"ticker": tk, "event": look.markets[tk].get("event_ticker") or tk, "bucket": b,
+             "count": c, "pc": pc, "fc": fc, "win": 1.0 if win_of[tk] == side else 0.0,
              "group": group_of(tk, look.category(series_of(tk)))}
-        (swept if ts >= close - window(tk) else kept).append(x)
+        (swept if sweep else kept).append(x)
 
     print(f"# Cheap maker fills: do they win?\n")
     print(f"Trade tape {datetime.utcfromtimestamp(t_lo):%Y-%m-%d %H:%M}–"
