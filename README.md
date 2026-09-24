@@ -5,8 +5,9 @@ Testing whether Becker's *Microstructure of Wealth Transfer in Prediction Market
 is built.
 
 - **Stage 1 — taker ("buy cheap NO"): no.** Below.
-- **Stage 2 — maker (rest cheap bids and collect the maker edge): in progress.**
-  A 22-hour order-book tape has been recorded; see
+- **Stage 2 — maker (rest cheap bids and collect the maker edge): no edge
+  established yet.** In-play sports is the only open candidate. Crypto and
+  combo makers at 1¢ are clearly adversely selected. See
   [Stage 2](#stage-2--the-maker-question-an-order-book-tape).
 
 ## Stage 1 result: no
@@ -351,6 +352,57 @@ that the fill is worth having. Whether non-sweep 1¢ fills win often enough to
 beat the fee is the adverse-selection question. The status stream records each
 market's result, so that is the next thing to measure.
 
+### Do cheap maker fills win?
+
+`fill_outcomes.py` scores every maker fill at ≤10¢ on the trade tape: 134M
+contracts across all markets, not only the sampled books. Once a market
+settles, the fill wins if the result matches the maker's side. Net return on
+stake is after the unrounded maker fee. Intervals are 95% confidence intervals,
+resampled by event. For settled markets the API reports the moment trading
+actually stopped as `close_time`, so sweeps are timed from the real end,
+including matches that ended early. 6% of the volume is in markets not yet
+settled and is left out.
+
+1¢ fills (price ≤1¢), with sweeps split out at 15 minutes before close (60 for
+sports), 2026-09-23 08:40 to 09-24 09:52 UTC:
+
+| | win rate | needed to break even | net return | 95% CI | events |
+|---|---:|---:|---:|---|---:|
+| sweeps, all markets | 0.11% | 0.51% | −79% | [−89%, −66%] | 3,910 |
+| crypto (hourly BTC/ETH), 15–60 min before close | 0.08% | 1.02% | **−94%** | [−102%, −79%] | 172 |
+| multivariate combos (sub-cent) | 0.04% | 0.61% | **−95%** | [−102%, −81%] | 944 |
+| other (index, approval, weather) | 1.31% | 1.02% | +29% | [−94%, +141%] | 169 |
+| sports | 2.49% | 1.01% | +148% | [−56%, +599%] | 403 |
+
+For comparison, Becker's 2021–25 figure for makers at 1¢ is a 1.57% win rate.
+
+- **Crypto and combos are adversely selected.** 1¢ makers in hourly crypto
+  markets win 0.08% against a 1.02% breakeven. With a 60-minute window only 6
+  crypto events remain outside it, so this result is about quoting in the last
+  hour of an hourly market. Combo makers at sub-cent prices almost never win.
+- **Sports is the only positive point estimate, and it is in-play.** With a
+  180-minute sports window, only 41 sports events are left outside it: nearly
+  every cheap sports fill happens during the match. At 1¢ the interval includes
+  zero. Only a few cells elsewhere clear zero (sports 8¢ [+55%, +519%]; sports
+  2¢ with a 180-minute cricket window [+7%, +624%]), and across 10 price levels,
+  5 groups and 4 window settings a few such cells are expected by chance.
+- **So there is no established 1¢ maker edge in any group.** One day gives
+  about 400 sports events. A result that clears zero at 1¢ would take roughly a
+  week of tape if the true edge is as large as the point estimate.
+
+What this still doesn't capture:
+
+- **Queue position.** These are every maker fill, so the win rate is the
+  average across all queue positions. A new quote joins the back of the queue,
+  and it only fills when a large order clears the whole level, which is when
+  the taker is most likely to be informed. The last place in the queue is
+  probably worse than this average. Measuring that needs order-by-order data.
+- **Fee rounding.** Kalshi rounds the fee up to the cent per order. On a
+  10-contract order at 1¢ that is $0.01 on $0.10 of stake, 10% rather than
+  0.02%. The table uses the unrounded fee.
+- **Which markets have settled.** Scoring needs a result, so long-dated markets
+  are under-represented.
+
 ### Limits
 
 - **Snapshots, not order-by-order changes.** A snapshot every ~6 seconds shows
@@ -382,3 +434,5 @@ market's result, so that is the next thing to measure.
 | `tail_depth.py` | cheap-side depth, spreads and 1¢ queue wait over the tape, sweeps excluded |
 | `test_tape.py` | 9 tests: ticker selection, the sweep-window rule, restart-safe output, exit on outage |
 | `test_tail_depth.py` | 7 tests: effective close, sweep windows by category, cheap-side stats |
+| `fill_outcomes.py` | scores cheap maker fills against settled results, by group, with event-clustered CIs |
+| `test_fill_outcomes.py` | 6 tests: maker leg, net return and breakeven, groups, event bootstrap |
