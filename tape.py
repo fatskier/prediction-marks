@@ -34,6 +34,13 @@ Status is polled so analysis can find when trading actually stopped. Many
 markets close early (a tennis match ends), and their resolution sweep happens
 then, long before the scheduled close_time.
 
+If the API stays unreachable (every request given up on for --max-failures
+consecutive trade polls), tape.py exits with code 3 rather than retrying
+forever. In a cloud session the outbound proxy's port can change when the
+container restarts, and a recorder that outlives the restart keeps the stale
+port; only a process started from a fresh shell can reach the network again.
+run_tape.sh stops on exit code 3 for the same reason.
+
 A killed process leaves its last file without a gzip trailer, so a restart
 never appends to an existing file: it writes HH.<stream>.1.jsonl.gz, .2, and
 so on. Read the tape with read_stream(), which tolerates the missing trailer.
@@ -253,6 +260,8 @@ class Recorder:
         self.stop = False
         self.n_trades = 0
         self.n_books = 0
+        self.failures = 0
+        self.exit_code = 0
 
     def poll_trades(self) -> None:
         """Fetch all prints since cursor_ts (minus overlap), dedupe, record."""
@@ -406,8 +415,15 @@ class Recorder:
                           f"books={self.n_books} universe={len(self.universe)} "
                           f"calls={self.api.calls} errors={self.api.errors}", flush=True)
                     next_log = now + 60
+                self.failures = 0
             except RuntimeError as e:
+                self.failures += 1
                 print(f"error: {e}", file=sys.stderr, flush=True)
+                if self.failures >= a.max_failures:
+                    print(f"{self.failures} consecutive failures; network unreachable, exiting 3",
+                          file=sys.stderr, flush=True)
+                    self.exit_code = 3
+                    break
                 time.sleep(10)
         pool.shutdown()
         self.sink.close()
@@ -426,6 +442,8 @@ def main(argv=None) -> None:
                    help="skip markets within this many minutes of close")
     p.add_argument("--sweep-min-sports", type=float, default=SWEEP_MIN_SPORTS,
                    help="the same for Sports-category markets")
+    p.add_argument("--max-failures", type=int, default=10,
+                   help="exit with code 3 after this many consecutive failed trade polls")
     p.add_argument("--max-pages", type=int, default=200, help="page cap per trade poll")
     p.add_argument("--trade-every", type=float, default=5)
     p.add_argument("--universe-every", type=float, default=60)
@@ -437,6 +455,7 @@ def main(argv=None) -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     rec.run()
+    sys.exit(rec.exit_code)
 
 
 if __name__ == "__main__":

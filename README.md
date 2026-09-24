@@ -325,10 +325,13 @@ none of these waits is an estimate yet. An overnight run is in progress.
   depth at each price and where the book stood around each print. It can't track
   a single order's place in the queue. That needs the authenticated WebSocket
   `orderbook_delta` feed and an API key.
-- **The tape lives in an ephemeral cloud container.** A container recycle kills
-  the recorder and can lose the data. Gaps so far: 09:18–09:22, 10:30–12:27, and
-  a few seconds at each deliberate restart. For a durable multi-day tape, run
-  `./run_tape.sh` on a machine you control.
+- **The tape lives in an ephemeral cloud container.** A container recycle can
+  kill the recorder, or leave it running with a stale proxy port so every request
+  fails. `tape.py` exits with code 3 after about 10 minutes of failures, and
+  `run_tape.sh` then stops so a process started from a fresh shell can take
+  over. Gaps so far (UTC): 09-23 09:18–09:22 and 10:30–12:27, 09-24 01:22–02:34,
+  and a few seconds at each deliberate restart; `data/gaps.log` has the causes.
+  For a durable multi-day tape, run `./run_tape.sh` on a machine you control.
 
 ## Files
 
@@ -344,5 +347,5 @@ none of these waits is an estimate yet. An overnight run is in progress.
 | `tape.py` | Stage 2 recorder: trade tape, book snapshots, status, metadata |
 | `run_tape.sh` | keeps `tape.py` running; restarts it if it exits |
 | `tail_depth.py` | cheap-side depth, spreads and 1¢ queue wait over the tape, sweeps excluded |
-| `test_tape.py` | 8 tests: ticker selection, the sweep-window rule, restart-safe output |
+| `test_tape.py` | 9 tests: ticker selection, the sweep-window rule, restart-safe output, exit on outage |
 | `test_tail_depth.py` | 7 tests: effective close, sweep windows by category, cheap-side stats |

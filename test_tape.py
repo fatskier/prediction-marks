@@ -103,3 +103,23 @@ def test_eligible_drops_markets_seen_to_stop(tmp_path):
     assert rec.eligible("TEN90")
     rec.status["TEN90"] = "inactive"
     assert not rec.eligible("TEN90")
+
+
+def test_recorder_exits_3_when_network_stays_down(tmp_path, monkeypatch):
+    import tape
+
+    rec = _recorder(tmp_path, {}, {})
+    rec.args.max_failures, rec.args.duration = 3, 0
+    rec.args.trade_every, rec.args.universe_every, rec.args.workers = 0, 1e9, 1
+    polls = []
+
+    def poll():  # the startup poll succeeds, every later one fails
+        polls.append(1)
+        if len(polls) > 1:
+            raise RuntimeError("giving up")
+
+    rec.poll_trades = poll
+    rec.refresh_universe = lambda: None
+    monkeypatch.setattr(tape.time, "sleep", lambda s: None)
+    rec.run()
+    assert rec.exit_code == 3 and rec.failures == 3
