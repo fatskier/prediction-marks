@@ -111,7 +111,8 @@ def snapshot_stats(book: dict, tail: float = TAIL):
         # implied ask on the cheap side = 1 - best bid on the other side
         "spread": (1 - opp) - best if opp is not None else None,
         "subcent_best": abs(best * 100 - round(best * 100)) > 1e-6,
-        "levels": levels,
+        # only the cheap levels are used later; keeping all of them costs gigabytes overnight
+        "levels": [(p, q) for p, q in levels if p <= tail],
     }
 
 
@@ -158,12 +159,12 @@ def main(argv=None):
     def window(tk: str) -> float:
         return (a.sweep_min_sports if sports(tk) else a.sweep_min) * 60
 
-    trades = [t for t in read_stream(a.tape, "trades") if t["ticker"] in tail_set]
-    for t in trades:
-        t["_ts"] = trade_ts(t)
+    # slim tuples, not the raw records: an overnight tape holds millions of prints
+    trades = [(t["ticker"], trade_ts(t), t["taker_side"], t["yes_price_dollars"], t["no_price_dollars"],
+               t["count_fp"]) for t in read_stream(a.tape, "trades") if t["ticker"] in tail_set]
     prints = defaultdict(list)
-    for t in trades:
-        prints[t["ticker"]].append(t["_ts"])
+    for tk, ts, *_ in trades:
+        prints[tk].append(ts)
     close_eff: dict[str, float | None] = {}
     for tk in tail_set:
         m = meta.get(tk)
@@ -173,9 +174,13 @@ def main(argv=None):
         close_eff[tk] = effective_close(iso_ts(m["close_time"]), sorted(status[tk]), sorted(prints[tk]))
     excluded = (lambda tk, t: False) if a.keep_sweeps else (lambda tk, t: in_sweep(t, close_eff[tk], window(tk)))
 
-    books = [b for b in read_stream(a.tape, "books") if b["ticker"] in tail_set]
-    t_min = min((b["_recv"] for b in books), default=0.0)
-    t_max = max((b["_recv"] for b in books), default=0.0)
+    # two streaming passes over the books rather than holding them all
+    books = lambda: (b for b in read_stream(a.tape, "books") if b["ticker"] in tail_set)
+    t_min, t_max = float("inf"), 0.0
+    for b in books():
+        t_min, t_max = min(t_min, b["_recv"]), max(t_max, b["_recv"])
+    if t_max == 0.0:
+        t_min = 0.0
 
     def t_end(tk: str) -> float:
         """Last time at which tk's data can be classified."""
@@ -186,7 +191,7 @@ def main(argv=None):
 
     per_ticker = defaultdict(list)
     n_books = n_empty = n_noncheap = n_sweep_books = n_censored = 0
-    for b in books:
+    for b in books():
         if b["_recv"] > t_end(b["ticker"]):
             n_censored += 1
             continue
@@ -214,23 +219,22 @@ def main(argv=None):
     fills = defaultdict(float)  # (ticker, side, bucket) -> contracts
     swept = defaultdict(float)  # bucket -> contracts excluded as sweeps
     kept = defaultdict(float)   # bucket -> contracts not excluded, same window as swept
-    for t in trades:
-        tk = t["ticker"]
+    for tk, ts, taker_side, yes_px, no_px, count in trades:
         # window on execution time: the startup backfill shares a single _recv
-        if not (t_min <= t["_ts"] <= t_end(tk)):
+        if not (t_min <= ts <= t_end(tk)):
             continue
         # taker buys YES -> a maker NO bid at no_price filled, and vice versa
-        maker_side = "no" if t["taker_side"] == "yes" else "yes"
-        p = f(t["no_price_dollars"] if maker_side == "no" else t["yes_price_dollars"])
+        maker_side = "no" if taker_side == "yes" else "yes"
+        p = f(no_px if maker_side == "no" else yes_px)
         if p > a.tail:
             continue
         c = cent_bucket(p)
-        if excluded(tk, t["_ts"]):
-            swept[c] += f(t["count_fp"])
+        if excluded(tk, ts):
+            swept[c] += f(count)
             continue
-        kept[c] += f(t["count_fp"])
-        if tk in rated and span[tk][0] <= t["_ts"] <= span[tk][1]:
-            fills[(tk, maker_side, c)] += f(t["count_fp"])
+        kept[c] += f(count)
+        if tk in rated and span[tk][0] <= ts <= span[tk][1]:
+            fills[(tk, maker_side, c)] += f(count)
 
     def rate(tk: str, side: str, c: int) -> float:
         return fills[(tk, side, c)] / span_h[tk] if tk in rated else float("nan")

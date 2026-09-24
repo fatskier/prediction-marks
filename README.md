@@ -6,7 +6,7 @@ is built.
 
 - **Stage 1 — taker ("buy cheap NO"): no.** Below.
 - **Stage 2 — maker (rest cheap bids and collect the maker edge): in progress.**
-  A live order-book tape is being recorded; see
+  A 22-hour order-book tape has been recorded; see
   [Stage 2](#stage-2--the-maker-question-an-order-book-tape).
 
 ## Stage 1 result: no
@@ -294,30 +294,62 @@ whichever is earlier.
   match at 93–99¢ for two hours, is not caught until it stops, and 60 minutes may
   be too short for cricket.
 
-### First hour (2026-09-23 09:12–10:25 UTC, provisional)
+### Overnight tape (2026-09-23 09:12 to 09-24 07:30 UTC)
 
-The filter removed 92% of cheap-side maker volume, and 95% at 1¢. What was left:
-30 tickers with usable books, 21 of them recorded long enough to give a fill
-rate. Across those 30 (median, with p10–p90 in brackets):
+The tape covers 22.3 hours of book snapshots, minus three gaps (listed under
+Limits). Kalshi's regular Thursday closure, 07:00–09:00 UTC, ends the window.
+2,067 tickers passed through the tail universe. After sweeps are excluded, 539
+have usable books (257 of them sports), and 394 were recorded long enough to
+give a fill rate.
 
-| | |
-|---|---|
-| best cheap-side bid | 5¢ |
-| contracts at that bid | 853 (105–31k) |
-| depth at ≤10¢ | $287 (p90 $7.8k) |
-| spread | 1¢, one tick (p90 4¢) |
-| best bid on a sub-cent tick | almost never; one long-dated market holds 900k contracts at 0.1¢ |
+**Sweeps are most of the volume.** The filter removed 79% of cheap-side maker
+volume, and 85% at 1¢ (9.5M of 11.2M contracts). With a 15-minute window for
+sports it would remove 48% and 67%. Choosing tickers outside their sweep window
+cut the share of snapshots spent on sweeps from 82% to 55%. Almost all of the
+rest (95%) are sports markets that ended early, which the recorder can't see
+coming.
 
-The 1¢ queue wait is resting contracts divided by maker fills per hour:
+**Depth** (median across the 539 tickers, with p10–p90 in brackets):
 
-| group | wait | caveat |
-|---|---:|---|
-| closing within 24 h | 5.6 h | 62% of fills from one hourly BTC market |
-| non-sports | ~50 h | 146 h including the 0.1¢ wall above |
-| sports | 1.1 h | all fills from one cricket match that was still undecided |
+| | all | closing within 24 h (252) | closing later (287) |
+|---|---|---|---|
+| best cheap-side bid | 6¢ | 4¢ | 7¢ |
+| contracts at that bid | 897 (32–11k) | 730 | 2,112 |
+| depth at ≤10¢ | $328 (p90 $3.1k) | $184 | $594 |
+| price levels at ≤10¢ | 5 | 4 | 6 |
+| spread | 1¢, one tick (p90 4¢) | 1¢ | 1¢ |
 
-Every price level still gets at least half its fills from a single ticker, so
-none of these waits is an estimate yet. An overnight run is in progress.
+Sub-cent ticks are rare at the best bid. The exceptions are resting walls: one
+long-dated market with ~894k contracts at 0.1¢, and several multivariate combo
+markets quoting at 0.01–0.4¢.
+
+**The 1¢ queue** (wait = resting contracts ÷ maker fills per hour):
+
+| group | tickers | wait | largest single ticker's share of fills |
+|---|---:|---:|---|
+| closing within 24 h | 200 | 1.8 h | 7% |
+| closing after 24 h | 189 | 19.3 h | 38%, a cricket match |
+| sports | 177 | 4.9 h | 46%, the same cricket match |
+| non-sports | 212 | 24.8 h | 27%, a multivariate combo |
+
+- **Closing within 24 hours** is the only well-spread estimate. It is mostly
+  hourly BTC range markets: about 1.8 hours at 1¢ and 1.0 hour at 2¢. With
+  sweeps kept, it reads 1.2 hours, with 43% of fills from one expiring
+  15-minute BTC market.
+- **Sports is overstated.** The 60-minute window is too short for cricket. The
+  India under-19 one-day match stopped trading at 10:27 and settled YES, but
+  194k of its contracts traded at 94–99¢ one to three hours before the stop,
+  against 14k inside the last hour.
+- **Non-sports at 1¢** is dominated by resting sub-cent walls in long-dated
+  markets and multivariate combos. Those are parlay-style markets that probably
+  belong in a separate group.
+- **From 2¢ to 10¢** the wait is under about 3.6 hours in every group, and
+  under 2 hours in most.
+
+**What this doesn't show.** A short queue says a quote would get filled, not
+that the fill is worth having. Whether non-sweep 1¢ fills win often enough to
+beat the fee is the adverse-selection question. The status stream records each
+market's result, so that is the next thing to measure.
 
 ### Limits
 
@@ -331,6 +363,7 @@ none of these waits is an estimate yet. An overnight run is in progress.
   `run_tape.sh` then stops so a process started from a fresh shell can take
   over. Gaps so far (UTC): 09-23 09:18–09:22 and 10:30–12:27, 09-24 01:22–02:34,
   and a few seconds at each deliberate restart; `data/gaps.log` has the causes.
+  Kalshi's own Thursday closure, 07:00–09:00 UTC, has no trading to record.
   For a durable multi-day tape, run `./run_tape.sh` on a machine you control.
 
 ## Files
