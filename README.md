@@ -413,7 +413,8 @@ What this still doesn't capture:
   kill the recorder, or leave it running with a stale proxy port so every request
   fails. `tape.py` exits with code 3 after about 10 minutes of failures, and
   `run_tape.sh` then stops so a process started from a fresh shell can take
-  over. Gaps so far (UTC): 09-23 09:18–09:22 and 10:30–12:27, 09-24 01:22–02:34,
+  over; `watchdog.sh`, started from a fresh shell, replaces a recorder whose
+  proxy port is stale straight away. Gaps so far (UTC): 09-23 09:18–09:22 and 10:30–12:27, 09-24 01:22–02:34,
   and a few seconds at each deliberate restart; `data/gaps.log` has the causes.
   Kalshi's own Thursday closure, 07:00–09:00 UTC, has no trading to record.
   For a durable multi-day tape, run `./run_tape.sh` on a machine you control.
@@ -431,6 +432,7 @@ What this still doesn't capture:
 | `test_published_cells.py` | 8 tests for the derivation and its validation |
 | `tape.py` | Stage 2 recorder: trade tape, book snapshots, status, metadata |
 | `run_tape.sh` | keeps `tape.py` running; restarts it if it exits |
+| `watchdog.sh` | relaunches `run_tape.sh` if it stops, and replaces a recorder left on a stale proxy port after a container restart |
 | `tail_depth.py` | cheap-side depth, spreads and 1¢ queue wait over the tape, sweeps excluded |
 | `test_tape.py` | 9 tests: ticker selection, the sweep-window rule, restart-safe output, exit on outage |
 | `test_tail_depth.py` | 7 tests: effective close, sweep windows by category, cheap-side stats |
