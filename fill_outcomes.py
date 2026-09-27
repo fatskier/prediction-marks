@@ -18,10 +18,20 @@ with the unrounded maker fee from fees.py. Kalshi rounds fees up to the cent
 per order, which at 1c can cost a small order far more; the unrounded fee is
 the most favourable case for the maker.
 
-Expiry sweeps are split out, not dropped. Once a market settles the API
-reports the moment trading actually stopped as close_time (a tennis match
-that ended early shows its real end), so a fill is a sweep if it came within
---sweep-min minutes of that, --sweep-min-sports for Sports-category series.
+The headline tables score every fill: what a maker quoting throughout would
+have got. They use nothing a maker could not know when quoting.
+
+The sweep split that follows is NOT safe for markets that can close early.
+Once a market settles the API reports the moment trading actually stopped as
+close_time, and a fill is called a sweep if it came within --sweep-min minutes
+of that (--sweep-min-sports for Sports). For a fixed-close market (hourly
+crypto) that time is known in advance. For a match it depends on how the match
+went: when the cheap side loses the match tends to end soon after, when it
+comes back the match runs long. On the 4-day tape, 86% of contracts in cheap
+sports fills that lost came within 60 minutes of the end, against 50% of those
+that won, so dropping the last hour inflated sports win rates several-fold
+(1c: 3.7% "non-sweep" against 1.34% for all fills). Read the split as
+descriptive only for markets that can close early.
 Fills in markets not yet settled cannot be scored; the report says how much of
 the volume that leaves out, since settled-by-now skews to short-dated markets.
 
@@ -298,12 +308,22 @@ def main(argv=None) -> None:
     print("Net return is on stake, after the unrounded maker fee. Breakeven is the win rate needed "
           "to cover price plus fee. Becker's 2021–25 aggregate for makers at 1¢: 1.57% win.\n")
 
-    lines = summarize(kept, "Non-sweep fills, all markets", a.boot)
+    every = kept + swept
+    lines = ["## All fills (no look-ahead)\n"]
+    lines += summarize(every, "All fills, all markets", a.boot)
+    for g in ("sports", "crypto", "other", "combo"):
+        xs = [x for x in every if x["group"] == g]
+        if xs:
+            lines += summarize(xs, f"All fills, {g}", a.boot)
+    lines += ["## Split at the actual close (look-ahead for markets that can close early)\n",
+              "Sweep = within the window before the market's actual close, which for a match "
+              "depends on its outcome. Valid ex ante for fixed-close markets only.\n"]
+    lines += summarize(kept, "Non-sweep fills, all markets", a.boot)
     for g in ("sports", "crypto", "other", "combo"):
         xs = [x for x in kept if x["group"] == g]
         if xs:
             lines += summarize(xs, f"Non-sweep fills, {g}", a.boot)
-    lines += summarize(swept, "Sweep fills (for contrast)", a.boot)
+    lines += summarize(swept, "Sweep fills", a.boot)
     print("\n".join(lines))
 
 

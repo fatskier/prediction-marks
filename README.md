@@ -6,8 +6,9 @@ is built.
 
 - **Stage 1 — taker ("buy cheap NO"): no.** Below.
 - **Stage 2 — maker (rest cheap bids and collect the maker edge): no edge
-  established yet.** In-play sports is the only open candidate. Crypto and
-  combo makers at 1¢ are clearly adversely selected. See
+  established.** Over 4 days, cheap sports maker fills are modestly positive
+  at every price level but no interval at 1¢ clears zero; hourly crypto makers
+  lose clearly. See
   [Stage 2](#stage-2--the-maker-question-an-order-book-tape).
 
 ## Stage 1 result: no
@@ -354,54 +355,58 @@ market's result, so that is the next thing to measure.
 
 ### Do cheap maker fills win?
 
-`fill_outcomes.py` scores every maker fill at ≤10¢ on the trade tape: 134M
-contracts across all markets, not only the sampled books. Once a market
-settles, the fill wins if the result matches the maker's side. Net return on
-stake is after the unrounded maker fee. Intervals are 95% confidence intervals,
-resampled by event. For settled markets the API reports the moment trading
-actually stopped as `close_time`, so sweeps are timed from the real end,
-including matches that ended early. 6% of the volume is in markets not yet
-settled and is left out.
+`fill_outcomes.py` scores every maker fill at ≤10¢ on the trade tape against
+the settled result. A fill wins if the market settled on the maker's side.
+Net return on stake is after the unrounded maker fee. Intervals are 95%,
+resampled by event. The tape runs from 2026-09-23 08:40 to 09-27 18:56 UTC:
+740M maker contracts in about 260,000 markets. 5% of the volume is in markets
+not yet settled and is left out. Recording gaps total about 2 hours, listed
+under Limits.
 
-1¢ fills (price ≤1¢), with sweeps split out at 15 minutes before close (60 for
-sports), 2026-09-23 08:40 to 09-24 09:52 UTC:
+**All fills, no look-ahead.** This is what a maker quoting throughout would
+have got, at the average queue position:
 
-| | win rate | needed to break even | net return | 95% CI | events |
-|---|---:|---:|---:|---|---:|
-| sweeps, all markets | 0.11% | 0.51% | −79% | [−89%, −66%] | 3,910 |
-| crypto (hourly BTC/ETH), 15–60 min before close | 0.08% | 1.02% | **−94%** | [−102%, −79%] | 172 |
-| multivariate combos (sub-cent) | 0.04% | 0.61% | **−95%** | [−102%, −81%] | 944 |
-| other (index, approval, weather) | 1.31% | 1.02% | +29% | [−94%, +141%] | 169 |
-| sports | 2.49% | 1.01% | +148% | [−56%, +599%] | 403 |
+| | 1¢ win | breakeven | 1¢ net | 95% CI | events | 2¢–10¢ |
+|---|---:|---:|---:|---|---:|---|
+| sports | 1.34% | 1.02% | +32% | [−23%, +107%] | 10,750 | +7% to +39%; only 8¢ clears zero |
+| hourly crypto | 0.16% | 0.35% | −54% | [−85%, −9%] | 5,458 | −23% to −55%; 6 of 9 below zero |
+| other | 0.54% | 0.65% | −17% | [−62%, +53%] | 3,129 | mixed, none clears zero |
+| multivariate combos | 0.56% | 0.86% | −36% | [−62%, −2%] | 10,418 | mixed, 7–8¢ below zero |
 
 For comparison, Becker's 2021–25 figure for makers at 1¢ is a 1.57% win rate.
 
-- **Crypto and combos are adversely selected.** 1¢ makers in hourly crypto
-  markets win 0.08% against a 1.02% breakeven. With a 60-minute window only 6
-  crypto events remain outside it, so this result is about quoting in the last
-  hour of an hourly market. Combo makers at sub-cent prices almost never win.
-- **Sports is the only positive point estimate, and it is in-play.** With a
-  180-minute sports window, only 41 sports events are left outside it: nearly
-  every cheap sports fill happens during the match. At 1¢ the interval includes
-  zero. Only a few cells elsewhere clear zero (sports 8¢ [+55%, +519%]; sports
-  2¢ with a 180-minute cricket window [+7%, +624%]), and across 10 price levels,
-  5 groups and 4 window settings a few such cells are expected by chance.
-- **So there is no established 1¢ maker edge in any group.** One day gives
-  about 400 sports events. A result that clears zero at 1¢ would take roughly a
-  week of tape if the true edge is as large as the point estimate.
+- **Sports:** positive at all ten price levels, with a 1.34% win rate at 1¢.
+  But only one interval excludes zero, and the levels are not independent
+  evidence, since the same matches trade across them. That is suggestive, not
+  established. It is also before the two costs below.
+- **Hourly crypto:** makers are adversely selected. The takers who hit cheap
+  crypto bids know more.
 
-What this still doesn't capture:
+**A correction to earlier results.** The first-day table, and a first run of
+this 4-day tape, split out sweeps by time before the actual close. For a match,
+the actual close depends on the outcome. A side that ends up losing sits cheap
+near the end, when the match is about to finish. A side that comes back was
+cheap earlier, and the comeback lengthens the match. Of cheap sports fills,
+86% of the losing contracts came within an hour of the end, against 50% of the
+winning ones. Dropping the last hour therefore removed losers far more than
+winners. It produced 1¢ sports at 3.7% win and +270%, and every sports level
+from 2¢ to 10¢ looked significantly positive; with no look-ahead, only 8¢
+clears zero. The first-day "sports +148%" had the same flaw. `fill_outcomes.py`
+now leads with all fills, and labels the split as look-ahead for markets that
+can close early. The book-depth tables above use the same end-of-market
+exclusion. That only changes which snapshots are counted, not a win rate, but
+their sports queue figures carry the same caveat.
 
-- **Queue position.** These are every maker fill, so the win rate is the
-  average across all queue positions. A new quote joins the back of the queue,
-  and it only fills when a large order clears the whole level, which is when
-  the taker is most likely to be informed. The last place in the queue is
-  probably worse than this average. Measuring that needs order-by-order data.
+What would still move these numbers:
+
+- **Queue position.** These are averages over all maker fills. A new quote
+  joins the back of the queue and fills when a large order clears the whole
+  level, which is when the taker is most likely to be informed.
 - **Fee rounding.** Kalshi rounds the fee up to the cent per order. On a
-  10-contract order at 1¢ that is $0.01 on $0.10 of stake, 10% rather than
-  0.02%. The table uses the unrounded fee.
-- **Which markets have settled.** Scoring needs a result, so long-dated markets
-  are under-represented.
+  10-contract order at 1¢ that is 10% of stake, not the 0.02% used here. That
+  alone would take most of the 1¢ sports point estimate.
+- **Four days.** One weekend of US college football and MLB carries much of
+  the sports volume.
 
 ### Limits
 
