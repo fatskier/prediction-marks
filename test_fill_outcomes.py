@@ -35,3 +35,19 @@ def test_bootstrap_resamples_events_not_fills():
     rows = [("E1", 100, 100, 1.0, 0.0)] + [(f"E{i}", 100, 0, 1.0, 0.0) for i in range(2, 101)]
     lo, hi = bootstrap_ci(rows, n_boot=500)
     assert lo < hi and lo <= -1.0 + 1e-9
+
+
+def test_maker_fee_rounding_models():
+    from fill_outcomes import maker_fee
+    raw = 0.25 * 0.07 * 0.01 * 0.99  # $ per contract at 1c
+    assert abs(maker_fee(0.01, 10, "raw") - 10 * raw) < 1e-12
+    assert maker_fee(0.01, 10, "print") == 0.01          # rounds up to a cent
+    assert abs(maker_fee(0.01, 10, "100") - 0.002) < 1e-12  # $0.02 per 100-lot -> 0.02c each
+    assert abs(maker_fee(0.01, 1, "1000") - 0.18 / 1000) < 1e-12
+
+
+def test_cleared_levels_marks_levels_above_the_lowest():
+    from fill_outcomes import cleared_levels
+    # a taker bought YES through maker NO bids at 3c, 2c, 1c: 3c and 2c were cleared
+    assert cleared_levels([("no", 0.03, 5), ("no", 0.02, 7), ("no", 0.01, 2)]) == [True, True, False]
+    assert cleared_levels([("no", 0.01, 5)]) == [False]

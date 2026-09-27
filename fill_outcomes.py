@@ -55,6 +55,8 @@ import urllib.request
 from collections import defaultdict
 from datetime import datetime
 
+import math
+
 from fees import fee_per_contract
 from tape import HOSTS, SWEEP_MIN, SWEEP_MIN_SPORTS, TAIL, read_stream, trade_ts
 
@@ -88,6 +90,36 @@ def group_of(ticker: str, category: str | None) -> str:
     if category in ("Crypto",):
         return "crypto"
     return "other"
+
+
+def maker_fee(price: float, contracts: float, fee_model: str) -> float:
+    """Maker fee in dollars on `contracts` filled at `price`.
+
+    raw     unrounded, the most favourable case
+    print   rounded up to the cent on each print, as if every print were its
+            own order: the least favourable case
+    N       rounded up to the cent on orders of N contracts
+    """
+    raw = fee_per_contract(price, maker=True)
+    if fee_model == "raw":
+        return raw * contracts
+    if fee_model == "print":
+        return math.ceil(round(raw * contracts * 100, 9)) / 100
+    n = float(fee_model)
+    return math.ceil(round(raw * n * 100, 9)) / 100 / n * contracts
+
+
+def cleared_levels(group: list[tuple[str, float, float]]) -> list[bool]:
+    """For the prints of one taker order, which ones are at a level it cleared.
+
+    group holds (maker side, maker price, contracts) for prints sharing ticker,
+    created_time and taker side. A taker walks the maker bids from the best
+    down, so every maker price above the lowest one in the order was taken out
+    in full: the back of that queue was filled. The lowest level may have been
+    only partly taken, so it does not count.
+    """
+    lo = min(p for _, p, _ in group)
+    return [p > lo for _, p, _ in group]
 
 
 def net_return(win: float, price: float) -> float:
@@ -243,6 +275,10 @@ def main(argv=None) -> None:
     ap.add_argument("--sweep-min-cricket", type=float, default=None,
                     help="separate window for one-day/T20 cricket series (default: the sports window)")
     ap.add_argument("--boot", type=int, default=1000)
+    ap.add_argument("--fee", default="raw",
+                    help="maker fee: raw (unrounded), print (rounded per print), or N (rounded per N-contract order)")
+    ap.add_argument("--queue", choices=("all", "cleared"), default="all",
+                    help="cleared: only fills at a price level one taker order took out in full (back of the queue)")
     a = ap.parse_args(argv)
     cache = a.cache or os.path.join(os.path.dirname(os.path.abspath(a.tape)), "outcomes")
 
@@ -275,20 +311,42 @@ def main(argv=None) -> None:
     # 3. score: totals per (market, maker side, bucket, sweep?)
     agg = defaultdict(lambda: [0.0, 0.0, 0.0])
     unsettled_c = total_c = 0.0
-    for t in read_stream(a.tape, "trades"):
-        side, p = maker_leg(t)
-        if not 0 < p <= a.tail:
-            continue
-        tk, c = t["ticker"], float(t["count_fp"])
-        total_c += c
-        if tk not in close_of:
-            unsettled_c += c
-            continue
-        sweep = trade_ts(t) >= close_of[tk] - win_dur[tk]
-        e = agg[(tk, side, cent_bucket(p), sweep)]
-        e[0] += c
-        e[1] += c * p
-        e[2] += c * fee_per_contract(p, maker=True)
+
+    def taker_orders():
+        """Prints grouped by taker order: same ticker, created_time and taker side.
+
+        The recorder writes each poll's prints sorted by time, so one order's
+        prints are adjacent.
+        """
+        key, group = None, []
+        for t in read_stream(a.tape, "trades"):
+            k = (t["ticker"], t["created_time"], t["taker_side"])
+            if k != key and group:
+                yield group
+                group = []
+            key = k
+            group.append(t)
+        if group:
+            yield group
+
+    for order in taker_orders():
+        legs = [maker_leg(t) for t in order]
+        keep = cleared_levels([(s, p, 0.0) for s, p in legs]) if a.queue == "cleared" else [True] * len(order)
+        for t, (side, p), k in zip(order, legs, keep):
+            if not 0 < p <= a.tail:
+                continue
+            tk, c = t["ticker"], float(t["count_fp"])
+            total_c += c
+            if not k:
+                continue
+            if tk not in close_of:
+                unsettled_c += c
+                continue
+            sweep = trade_ts(t) >= close_of[tk] - win_dur[tk]
+            e = agg[(tk, side, cent_bucket(p), sweep)]
+            e[0] += c
+            e[1] += c * p
+            e[2] += maker_fee(p, c, a.fee)
 
     kept, swept = [], []
     for (tk, side, b, sweep), (c, pc, fc) in agg.items():
@@ -305,7 +363,10 @@ def main(argv=None) -> None:
           f"(within {a.sweep_min:g} min of the actual close, {a.sweep_min_sports:g} for sports"
           + (f", {a.sweep_min_cricket:g} for cricket" if a.sweep_min_cricket is not None else "")
           + f") and {sum(x['count'] for x in kept):,.0f} are not.\n")
-    print("Net return is on stake, after the unrounded maker fee. Breakeven is the win rate needed "
+    print(f"Fee model: {a.fee}. Queue: {a.queue}"
+          + (" (only fills at levels a single taker order cleared, a proxy for the back of the queue)"
+             if a.queue == "cleared" else "") + ".\n")
+    print("Net return is on stake, after the maker fee. Breakeven is the win rate needed "
           "to cover price plus fee. Becker's 2021–25 aggregate for makers at 1¢: 1.57% win.\n")
 
     every = kept + swept
