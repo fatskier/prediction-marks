@@ -6,9 +6,10 @@ is built.
 
 - **Stage 1 — taker ("buy cheap NO"): no.** Below.
 - **Stage 2 — maker (rest cheap bids and collect the maker edge): no edge
-  established.** Over 4 days, cheap sports maker fills are modestly positive
-  at every price level but no interval at 1¢ clears zero; hourly crypto makers
-  lose clearly. See
+  established.** Over 4 days, in-play sports makers look positive at 3–7¢,
+  including at the back of the queue and net of fee rounding, but that
+  hypothesis came from the data and needs an out-of-sample test. 1¢ can't be
+  judged without order-by-order data. Hourly crypto makers lose. See
   [Stage 2](#stage-2--the-maker-question-an-order-book-tape).
 
 ## Stage 1 result: no
@@ -397,16 +398,41 @@ can close early. The book-depth tables above use the same end-of-market
 exclusion. That only changes which snapshots are counted, not a win rate, but
 their sports queue figures carry the same caveat.
 
-What would still move these numbers:
+**Fee rounding and queue position.** Both were run with `--fee` and `--queue`
+on the same 4-day tape (sports and crypto; net return, 95% CI):
 
-- **Queue position.** These are averages over all maker fills. A new quote
-  joins the back of the queue and fills when a large order clears the whole
-  level, which is when the taker is most likely to be informed.
-- **Fee rounding.** Kalshi rounds the fee up to the cent per order. On a
-  10-contract order at 1¢ that is 10% of stake, not the 0.02% used here. That
-  alone would take most of the 1¢ sports point estimate.
-- **Four days.** One weekend of US college football and MLB carries much of
-  the sports volume.
+| | all fills, raw fee | fee rounded per print | fee rounded per 10-lot | back of queue |
+|---|---|---|---|---|
+| sports 1¢ | +32% [−23%, +107%] | +31% | +23% [−32%, +107%] | not measurable |
+| sports 2¢ | +33% [−35%, +128%] | +33% | +30% | +0% [−41%, +54%] |
+| sports 3–7¢ | +7% to +39% | same | +7% to +38% | +36% to +49%; 3¢, 5¢ and 6¢ clear zero |
+| sports 8–10¢ | +23% to +37% | same | same | −1% to +28%, none clears zero |
+| crypto 1¢ | −54% [−85%, −9%] | −56% | −82% [−111%, −34%] | −58% [−88%, −18%] |
+
+- **Fee rounding barely matters at observed print sizes.** Treating every
+  print as its own order changes almost nothing, because the prints are large.
+  Only small orders pay much more: at 10 contracts the 1¢ breakeven rises from
+  1.02% to 1.10%, and the sports 1¢ estimate falls from +32% to +23%.
+- **Back of the queue:** fills at a price level that one taker order cleared
+  completely. That order must also have filled at a lower level, so a 1¢ level
+  can almost never show as cleared: 1¢ is the lowest price in most sports
+  markets (3 events). At 2¢ the back of the queue breaks even. From 3¢ to 7¢
+  it does no worse than the average fill, and three intervals exclude zero.
+  That is the opposite of the adverse selection expected when a large order
+  sweeps a level. Across 10 price levels and 6 scenarios, a few cells clearing
+  zero is still what chance would produce.
+- **Hourly crypto is negative in every scenario.**
+
+The evidence now points at in-play sports from 3¢ to 7¢, not 1¢, but the
+hypothesis was chosen after looking at these numbers. The fair test is out of
+sample: fix it now (sports, 3–7¢, all fills and back of queue, net of a
+10-lot fee) and score only tape recorded after 2026-09-27 19:00 UTC. At the
+current rate, 2–3 weeks gives about as many events as these 4 days. 1¢
+itself would need order-by-order book data (the WebSocket feed, which needs
+an API key) to see queue position at the bottom price.
+
+Other limits: one weekend of US college football and MLB carries much of the
+sports volume, and settled-market scoring under-weights long-dated markets.
 
 ### Limits
 
@@ -443,4 +469,4 @@ What would still move these numbers:
 | `test_tape.py` | 9 tests: ticker selection, the sweep-window rule, restart-safe output, exit on outage |
 | `test_tail_depth.py` | 7 tests: effective close, sweep windows by category, cheap-side stats |
 | `fill_outcomes.py` | scores cheap maker fills against settled results, by group, with event-clustered CIs |
-| `test_fill_outcomes.py` | 6 tests: maker leg, net return and breakeven, groups, event bootstrap |
+| `test_fill_outcomes.py` | 8 tests: maker leg, net return and breakeven, groups, event bootstrap, fee rounding, cleared levels |
