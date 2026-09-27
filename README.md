@@ -419,8 +419,9 @@ What would still move these numbers:
   fails. `tape.py` exits with code 3 after about 10 minutes of failures, and
   `run_tape.sh` then stops so a process started from a fresh shell can take
   over; `watchdog.sh`, started from a fresh shell, replaces a recorder whose
-  proxy port is stale straight away. Gaps so far (UTC): 09-23 09:18–09:22 and 10:30–12:27, 09-24 01:22–02:34,
-  and a few seconds at each deliberate restart; `data/gaps.log` has the causes.
+  proxy port is stale straight away. Gaps so far (UTC): 09-23 09:18–09:22 and
+  10:30–12:27, 09-24 01:22–02:34 and 09:00–09:49, then six of 1–3 minutes after
+  container restarts; `data/gaps.log` has the causes.
   Kalshi's own Thursday closure, 07:00–09:00 UTC, has no trading to record.
   For a durable multi-day tape, run `./run_tape.sh` on a machine you control.
 
