@@ -434,6 +434,35 @@ an API key) to see queue position at the bottom price.
 Other limits: one weekend of US college football and MLB carries much of the
 sports volume, and settled-market scoring under-weights long-dated markets.
 
+### Paper market maker (out-of-sample test, from 2026-09-27 20:07 UTC)
+
+`paper_mm.py` quotes on paper against the live exchange. It places no orders.
+It picks up to 30 active sports markets whose cheap side trades at 3–7¢. In
+each it joins the cheap side's best bid with a 10-contract order, at the back
+of the resting queue. It fills from the real trade feed:
+
+- trades at its price use up the queue ahead first;
+- a trade at a lower price means its level was cleared, so it fills in full;
+- cancellations ahead of it, seen in the book, move it up the queue.
+
+If the best bid moves it cancels and rejoins at the new level; if the price
+leaves 3–7¢, or the market is within 5 minutes of its scheduled close, it
+cancels. Each fill pays the maker fee rounded up to the cent. Positions are
+capped at 100 contracts per market and held to settlement.
+`paper_report.py` scores the fills once markets settle.
+
+Only fills after the start time count, so the test uses no data from the
+analysis that suggested it. Pass: net return on stake above zero with the
+event-clustered 95% interval excluding zero, over about as many events as the
+4-day tape (2–3 weeks). The book is read every few seconds through the public
+REST API, so queue position is approximate. The WebSocket order-book feed
+(which needs an API key) would make it exact and allow testing 1¢.
+
+```bash
+./watchdog.sh &              # keeps run_tape.sh and run_paper.sh up, fixes a stale proxy
+python paper_report.py       # P&L so far on settled fills
+```
+
 ### Limits
 
 - **Snapshots, not order-by-order changes.** A snapshot every ~6 seconds shows
@@ -464,7 +493,11 @@ sports volume, and settled-market scoring under-weights long-dated markets.
 | `test_published_cells.py` | 8 tests for the derivation and its validation |
 | `tape.py` | Stage 2 recorder: trade tape, book snapshots, status, metadata |
 | `run_tape.sh` | keeps `tape.py` running; restarts it if it exits |
-| `watchdog.sh` | relaunches `run_tape.sh` if it stops, and replaces a recorder left on a stale proxy port after a container restart |
+| `watchdog.sh` | keeps `run_tape.sh` and `run_paper.sh` running, and replaces either one left on a stale proxy port after a container restart |
+| `paper_mm.py` | paper market maker: quotes the cheap side of sports markets at 3–7¢ and fills from the live tape through a modelled queue |
+| `run_paper.sh` | keeps `paper_mm.py` running |
+| `paper_report.py` | scores paper fills against settled results: P&L, return on stake, event-clustered CIs |
+| `test_paper_mm.py` | 5 tests: queue consumption, level clears, cancellations, book helpers |
 | `tail_depth.py` | cheap-side depth, spreads and 1¢ queue wait over the tape, sweeps excluded |
 | `test_tape.py` | 9 tests: ticker selection, the sweep-window rule, restart-safe output, exit on outage |
 | `test_tail_depth.py` | 7 tests: effective close, sweep windows by category, cheap-side stats |
