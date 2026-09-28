@@ -41,3 +41,18 @@ def test_book_helpers():
     assert resting_at(book, "no", 0.03) == 7
     t = {"taker_side": "yes", "yes_price_dollars": "0.9600", "no_price_dollars": "0.0400"}
     assert maker_leg(t) == ("no", 0.04)
+
+
+def test_positions_survive_a_restart(tmp_path):
+    from tape import Sink
+    from paper_mm import PaperMM
+
+    sink = Sink(str(tmp_path))
+    sink.write("fills", [{"ticker": "A", "count": 10}, {"ticker": "A", "count": 5}, {"ticker": "B", "count": 3}])
+    sink.close()
+
+    class Args:
+        host, out, rate = "prod", str(tmp_path), 4.0
+
+    mm = PaperMM(Args)
+    assert mm.positions["A"] == 15 and mm.positions["B"] == 3 and mm.positions["C"] == 0

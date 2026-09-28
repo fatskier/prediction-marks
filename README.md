@@ -452,7 +452,12 @@ capped at 100 contracts per market and held to settlement.
 `paper_report.py` scores the fills once markets settle.
 
 Only fills after the start time count, so the test uses no data from the
-analysis that suggested it. Pass: net return on stake above zero with the
+analysis that suggested it. A bug fix went in at 2026-09-28 00:50 UTC. Before
+it, markets that had dropped out of the 30-market universe but still held a
+position went on being quoted, under the same band and size rules. That grew
+the list to about 200 markets and slowed each quote's refresh to around a
+minute. A restart also reset the per-market position cap. The report can be
+split at that time if the two periods differ. Pass: net return on stake above zero with the
 event-clustered 95% interval excluding zero, over about as many events as the
 4-day tape (2–3 weeks). The book is read every few seconds through the public
 REST API, so queue position is approximate. The WebSocket order-book feed
@@ -497,7 +502,7 @@ python paper_report.py       # P&L so far on settled fills
 | `paper_mm.py` | paper market maker: quotes the cheap side of sports markets at 3–7¢ and fills from the live tape through a modelled queue |
 | `run_paper.sh` | keeps `paper_mm.py` running |
 | `paper_report.py` | scores paper fills against settled results: P&L, return on stake, event-clustered CIs |
-| `test_paper_mm.py` | 5 tests: queue consumption, level clears, cancellations, book helpers |
+| `test_paper_mm.py` | 6 tests: queue consumption, level clears, cancellations, book helpers, positions surviving a restart |
 | `tail_depth.py` | cheap-side depth, spreads and 1¢ queue wait over the tape, sweeps excluded |
 | `test_tape.py` | 9 tests: ticker selection, the sweep-window rule, restart-safe output, exit on outage |
 | `test_tail_depth.py` | 7 tests: effective close, sweep windows by category, cheap-side stats |

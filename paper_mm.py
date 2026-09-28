@@ -25,7 +25,8 @@ Each cycle it:
 Fills pay the maker fee rounded up to the cent on each fill, the conservative
 reading of Kalshi's per-order rounding. Positions are held to settlement;
 paper_report.py scores them. A --max-position cap per market stops one match
-dominating.
+dominating; positions are rebuilt from the fill log at startup so a restart
+does not reset it. Only markets in the current universe are quoted.
 
 Nothing here places orders. It uses the public REST API, so the book is seen
 every few seconds, not every change; that makes fills approximate.
@@ -41,12 +42,12 @@ import signal
 import sys
 import time
 import urllib.error
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from fees import order_fee
-from tape import ACTIVE, HOSTS, Api, Seen, Sink, trade_ts
+from tape import ACTIVE, HOSTS, Api, Seen, Sink, read_stream, trade_ts
 
 EPS = 1e-9
 
@@ -118,7 +119,6 @@ class Market:
     ticker: str
     event: str
     close_ts: float
-    position: float = 0.0
     quote: Quote | None = None
     prints: deque = field(default_factory=lambda: deque(maxlen=200))
 
@@ -130,7 +130,11 @@ class PaperMM:
         self.sink = Sink(args.out)
         self.seen = Seen()
         self.cursor_ts = time.time() - 120
-        self.markets: dict[str, Market] = {}
+        self.markets: dict[str, Market] = {}  # the quoting universe only
+        # contracts held per market, rebuilt from the fill log so a restart keeps the cap
+        self.positions: dict[str, float] = defaultdict(float)
+        for f in read_stream(args.out, "fills"):
+            self.positions[f["ticker"]] += f["count"]
         self.meta: dict[str, dict | None] = {}
         self.category: dict[str, str | None] = {}
         self.recent: deque = deque()  # (ts, ticker, maker side, maker price) of band-ish prints
@@ -196,7 +200,7 @@ class PaperMM:
             got = q.on_trade(side, p, float(t["count_fp"]))
             if got > 0:
                 fee = order_fee(q.price, got, maker=True)
-                mk.position += got
+                self.positions[q.ticker] += got
                 self.n_fills += got
                 self.log("fills", id=q.id, ticker=q.ticker, event=mk.event, side=q.side, price=q.price,
                          count=got, fee=fee, trade_id=t["trade_id"], trade_ts=ts,
@@ -223,11 +227,8 @@ class PaperMM:
             if mk and mk.close_ts > now + self.a.min_life:
                 keep[tk] = mk
         for tk, mk in self.markets.items():
-            if tk not in keep:
-                if mk.quote:
-                    self.cancel(mk, "left universe")
-                if mk.position > 0:
-                    keep[tk] = mk  # keep tracking for the record; no new quotes once it leaves
+            if tk not in keep and mk.quote:
+                self.cancel(mk, "left universe")
         self.markets = keep
         self.log("universe", tickers=sorted(keep))
 
@@ -253,9 +254,10 @@ class PaperMM:
         in_band = self.a.lo - EPS <= best <= self.a.hi + EPS
         if q:
             self.cancel(mk, "price moved" if in_band else "left band")
-        if not in_band or mk.position >= self.a.max_position:
+        held = self.positions[mk.ticker]
+        if not in_band or held >= self.a.max_position:
             return
-        mk.quote = Quote(mk.ticker, side, best, min(self.a.size, self.a.max_position - mk.position),
+        mk.quote = Quote(mk.ticker, side, best, min(self.a.size, self.a.max_position - held),
                          queue_ahead=size, placed=time.time(), id=next(self.ids))
         self.log("orders", op="place", id=mk.quote.id, ticker=mk.ticker, event=mk.event, side=side,
                  price=best, size=mk.quote.size, queue_ahead=size)
