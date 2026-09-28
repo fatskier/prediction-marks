@@ -101,8 +101,9 @@ class Api:
                 slot = max(time.monotonic(), self.last + self.min_gap)
                 self.last = slot
                 self.calls += 1
-            if slot > time.monotonic():
-                time.sleep(slot - time.monotonic())
+            wait = slot - time.monotonic()  # read the clock once: a second read can make it negative
+            if wait > 0:
+                time.sleep(wait)
             try:
                 with urllib.request.urlopen(url, timeout=20) as r:
                     return json.load(r)
