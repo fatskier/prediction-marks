@@ -123,3 +123,28 @@ def test_recorder_exits_3_when_network_stays_down(tmp_path, monkeypatch):
     monkeypatch.setattr(tape.time, "sleep", lambda s: None)
     rec.run()
     assert rec.exit_code == 3 and rec.failures == 3
+
+
+def test_api_retries_a_response_cut_off_mid_body(monkeypatch):
+    import http.client
+    import tape
+
+    calls = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(url, timeout):
+        calls.append(url)
+        if len(calls) == 1:
+            raise http.client.IncompleteRead(b"partial", 100)
+        return Resp()
+
+    monkeypatch.setattr(tape.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(tape.json, "load", lambda r: {"ok": True})
+    monkeypatch.setattr(tape.time, "sleep", lambda s: None)
+    assert tape.Api("http://x", rate=1000).get("/y") == {"ok": True} and len(calls) == 2

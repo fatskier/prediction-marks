@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import http.client
 import json
 import os
 import signal
@@ -112,7 +113,9 @@ class Api:
                     raise
                 if e.code != 429 and e.code < 500:
                     raise
-            except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError):
+            except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError,
+                    http.client.HTTPException, OSError):
+                # HTTPException covers a response cut off mid-body (IncompleteRead)
                 with self.lock:
                     self.errors += 1
             time.sleep(min(2 ** attempt, 30))
