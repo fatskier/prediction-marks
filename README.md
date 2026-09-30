@@ -5,12 +5,14 @@ Testing whether Becker's *Microstructure of Wealth Transfer in Prediction Market
 is built.
 
 - **Stage 1 — taker ("buy cheap NO"): no.** Below.
-- **Stage 2 — maker (rest cheap bids and collect the maker edge): no edge
-  established.** Over 4 days, in-play sports makers look positive at 3–7¢,
-  including at the back of the queue and net of fee rounding, but that
-  hypothesis came from the data and needs an out-of-sample test. 1¢ can't be
-  judged without order-by-order data. Hourly crypto makers lose. See
-  [Stage 2](#stage-2--the-maker-question-an-order-book-tape).
+- **Stage 2 — maker (rest cheap bids and collect the maker edge): no.** Over
+  4 days of tape, in-play sports makers looked positive at 3–7¢ (+36% to +49%
+  at the back of the queue). Tested out of sample with a paper market maker,
+  the same rule returned −31% on stake, 95% interval −54% to −4%, over 1,090
+  events. Most paper fills came from a single trade clearing the whole level,
+  the fills an informed taker picks off. Hourly crypto makers lose too. 1¢
+  was never testable without order-by-order data. Project stopped
+  2026-09-30. See [Stage 2](#stage-2--the-maker-question-an-order-book-tape).
 
 ## Stage 1 result: no
 
@@ -245,6 +247,29 @@ most cheap-side fills are expiry sweeps of markets whose result is already known
 in sub-cent ticks, so the 1¢ level is no longer always the bottom of the book.
 
 ## Stage 2 — the maker question: an order-book tape
+
+### Stage 2 result: no
+
+The paper market maker (below) ran from 2026-09-27 20:07 to 2026-09-30 17:02
+UTC and was stopped early, once the overall interval was already entirely
+below zero. The rule set beforehand needed a positive return with the interval
+above zero.
+
+| cheap-side price | contracts | events | win rate | breakeven | net return on stake | 95% CI (events) | filled by a level clear |
+|---|---:|---:|---:|---:|---:|---|---:|
+| 3¢ | 17,784 | 732 | 2.27% | 3.12% | −28% | −58% to +4% | 60% |
+| 4¢ | 16,493 | 657 | 2.96% | 4.12% | −29% | −57% to +3% | 62% |
+| 5¢ | 15,211 | 611 | 3.74% | 5.12% | −27% | −58% to +8% | 65% |
+| 6¢ | 13,083 | 511 | 4.67% | 6.12% | −24% | −56% to +17% | 67% |
+| 7¢ | 11,178 | 461 | 4.12% | 7.21% | −44% | −68% to −15% | 72% |
+| **all** | **73,749** | **1,090** | **3.44%** | **4.91%** | **−31% (−$1,085)** | **−54% to −4%** | **65%** |
+
+The in-sample +36% to +49% most likely came from noise plus choosing the best
+band after seeing the data. Two things weaken the out-of-sample run without
+plausibly flipping its sign: from 09-29 the cloud container ran it only about
+40 minutes in every two hours, and fills before the 09-28 00:50 fix are
+included. Not tested: whether fills where the queue ahead was worked through
+(as opposed to the level being cleared) make money on their own.
 
 Becker's maker edge at 1¢ (+55% net of fees) is an average over fills that
 happened. A new maker also has to wait behind the queue already resting at 1¢,
@@ -490,6 +515,9 @@ python paper_report.py       # P&L so far on settled fills
   test moves to an always-on machine (below).
 
 ### Running on an always-on machine
+
+(Written for the move off the cloud container; the project stopped before it
+happened.)
 
 Any Linux or macOS machine that stays on, such as a small cloud server
 (1 vCPU, 1 GB RAM). The code is standard-library Python 3.9+ with no API key.
