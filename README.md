@@ -483,7 +483,38 @@ python paper_report.py       # P&L so far on settled fills
   10:30–12:27, 09-24 01:22–02:34 and 09:00–09:49, then six of 1–3 minutes after
   container restarts; `data/gaps.log` has the causes.
   Kalshi's own Thursday closure, 07:00–09:00 UTC, has no trading to record.
-  For a durable multi-day tape, run `./run_tape.sh` on a machine you control.
+  From 09-29 the container went idle within minutes of each check, so both
+  processes ran for only about 40 minutes in every two hours (gaps of 75–116
+  minutes, all in `data/gaps.log`). A restart re-fetches only the last ~30
+  minutes of trades, so trades in a long gap are lost too. For that reason the
+  test moves to an always-on machine (below).
+
+### Running on an always-on machine
+
+Any Linux or macOS machine that stays on, such as a small cloud server
+(1 vCPU, 1 GB RAM). The code is standard-library Python 3.9+ with no API key.
+The recorder writes about 1 GB a day, so allow ~25 GB for the three weeks; the
+paper market maker alone needs a few MB.
+
+```bash
+git clone https://github.com/fatskier/prediction-marks.git
+cd prediction-marks && git checkout claude/beautiful-hopper-kdo5w8
+python3 -m pytest -q          # optional: pip install pytest first
+./deploy/start.sh             # starts watchdog.sh, which starts both loops
+./deploy/status.sh            # after a minute: trades= and markets= lines
+crontab -e                    # add the two lines below
+```
+
+```
+@reboot      /full/path/to/prediction-marks/deploy/start.sh
+*/5 * * * *  /full/path/to/prediction-marks/deploy/start.sh
+```
+
+`start.sh` does nothing if the watchdog is already running, so cron can call
+it freely. To carry the paper test across without double-counting, stop the
+cloud run first, then unpack its fills into `data/paper` before the first
+`start.sh` (`handover/paper.tar.gz`, pushed at cutover). Run
+`python3 paper_report.py` on the machine for the interim and final reports.
 
 ## Files
 
@@ -499,6 +530,8 @@ python paper_report.py       # P&L so far on settled fills
 | `tape.py` | Stage 2 recorder: trade tape, book snapshots, status, metadata |
 | `run_tape.sh` | keeps `tape.py` running; restarts it if it exits |
 | `watchdog.sh` | keeps `run_tape.sh` and `run_paper.sh` running, and replaces either one left on a stale proxy port after a container restart |
+| `deploy/start.sh` | starts the watchdog if it isn't running; for cron on an always-on machine |
+| `deploy/status.sh` | processes, last progress lines, recent gaps, disk |
 | `paper_mm.py` | paper market maker: quotes the cheap side of sports markets at 3–7¢ and fills from the live tape through a modelled queue |
 | `run_paper.sh` | keeps `paper_mm.py` running |
 | `paper_report.py` | scores paper fills against settled results: P&L, return on stake, event-clustered CIs |
